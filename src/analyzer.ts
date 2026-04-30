@@ -92,6 +92,9 @@ export async function analyzeStock(
   console.log(`Agent ID: ${agentId}`);
   console.log(`上下文传递: ${useContext ? "开启" : "关闭"}\n`);
 
+  // 每次新分析前重置 session，确保上下文干净
+  await resetOpenClawSession(agentId);
+
   // ========== 阶段一：程序化数据获取 ==========
   console.log("【阶段一】获取实时数据...");
   const [{ realtime, kline }, historicalPE, financials, peerComparison, insiderTrading] =
@@ -150,9 +153,6 @@ export async function analyzeStock(
   console.log(`    - 趋势: ${technical.trend}`);
   console.log(`    - 支撑位: ${technical.supports.map(s => "¥" + s.toFixed(2)).join(", ") || "暂无明显支撑"}`);
   console.log(`    - 压力位: ${technical.resistances.map(r => "¥" + r.toFixed(2)).join(", ") || "暂无明显压力"}`);
-
-  // 重置 session 确保上下文干净
-  await resetOpenClawSession(agentId);
 
   // ========== 阶段二：分析执行 ==========
   console.log("\n【阶段二】执行分析...\n");
