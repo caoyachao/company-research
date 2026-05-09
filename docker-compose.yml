@@ -1,0 +1,53 @@
+version: "3.8"
+
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: company_research/deploy/Dockerfile.gateway
+    container_name: llm-gateway
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./.env.gateway
+    volumes:
+      - gateway_cache:/app/cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - stock-analysis
+
+  research:
+    build:
+      context: ..
+      dockerfile: company_research/deploy/Dockerfile.research
+    container_name: stock-research
+    ports:
+      - "3000:3000"
+    environment:
+      - LLM_GATEWAY_URL=http://gateway:8000/v1
+      - LLM_GATEWAY_TIMEOUT=180
+      - PORT=3000
+    env_file:
+      - ./.env.research
+    volumes:
+      - ./reports:/app/reports
+      - ./cache:/app/cache
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - stock-analysis
+
+volumes:
+  gateway_cache:
+
+networks:
+  stock-analysis:
+    driver: bridge

@@ -1,6 +1,8 @@
 node_modules/
 dist/
+cache/
 reports/*.md
+reports/*.html
 .env
 .env.local
 .DS_Store

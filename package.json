@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "analyze": "tsx src/main.ts",
+    "web": "tsx src/web/server.ts",
+    "gateway": "python -m llm_gateway_sdk.server --port 8000",
     "test": "echo \"No tests yet\""
   },
   "dependencies": {

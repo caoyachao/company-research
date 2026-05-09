@@ -1,4 +1,4 @@
-import { callOpenClaw, resetOpenClawSession } from "./ai/openclaw.js";
+import { callLLM } from "./ai/gateway.js";
 import {
   ANALYSIS_STEPS,
   promptExtractSummary,
@@ -25,11 +25,39 @@ import {
   generateInsiderTradingAnalysis,
 } from "./data/calculators.js";
 
+export type AnalysisEventType =
+  | "phase_start"
+  | "phase_end"
+  | "step_start"
+  | "step_complete"
+  | "step_error"
+  | "debug_log"
+  | "data_fetched"
+  | "llm_call_start"
+  | "llm_call_end"
+  | "summary_extract"
+  | "complete"
+  | "error";
+
+export interface AnalysisEvent {
+  type: AnalysisEventType;
+  timestamp: number;
+  stepId?: number;
+  stepTitle?: string;
+  message?: string;
+  detail?: string;
+  category?: string;
+  durationMs?: number;
+  error?: string;
+  level?: "info" | "warn" | "error" | "debug";
+}
+
 export interface AnalyzerOptions {
   stockCode: string;
   useContext?: boolean;
   timeout?: number;
   onProgress?: (step: number, total: number, title: string) => void;
+  onEvent?: (event: AnalysisEvent) => void;
 }
 
 /**
@@ -82,192 +110,364 @@ ${reason}
 `;
 }
 
+function truncateDetail(detail: string, maxLen = 2000): string {
+  if (detail.length <= maxLen) return detail;
+  return detail.slice(0, maxLen) + `... [truncated, total ${detail.length} chars]`;
+}
+
 export async function analyzeStock(
   options: AnalyzerOptions
 ): Promise<StepResult[]> {
-  const { stockCode, useContext = true, timeout, onProgress } = options;
-  const agentId = process.env.STOCK_ANALYZER_AGENT || "worker2";
+  const { stockCode, useContext = true, timeout, onProgress, onEvent } = options;
 
-  console.log(`\n开始分析股票: ${stockCode}`);
-  console.log(`Agent ID: ${agentId}`);
-  console.log(`上下文传递: ${useContext ? "开启" : "关闭"}\n`);
+  function emitEvent(event: Omit<AnalysisEvent, "timestamp">) {
+    const fullEvent = { ...event, timestamp: Date.now() };
+    onEvent?.(fullEvent);
+  }
 
-  // 每次新分析前重置 session，确保上下文干净
-  await resetOpenClawSession(agentId);
+  try {
+    console.log(`\n开始分析股票: ${stockCode}`);
+    console.log(`上下文传递: ${useContext ? "开启" : "关闭"}\n`);
 
-  // ========== 阶段一：程序化数据获取 ==========
-  console.log("【阶段一】获取实时数据...");
-  const [{ realtime, kline }, historicalPE, financials, peerComparison, insiderTrading] =
-    await Promise.all([
-      fetchStockData(stockCode),
-      fetchHistoricalValuation(stockCode),
-      fetchFinancialData(stockCode),
-      fetchPeerComparison(stockCode),
-      fetchInsiderTrading(stockCode),
-    ]);
+    // ========== 阶段一：程序化数据获取 ==========
+    console.log("【阶段一】获取实时数据...");
+    emitEvent({ type: "phase_start", message: "阶段一：获取实时数据" });
 
-  const technical = calculateTechnicalIndicators(realtime, kline);
-  const valuation = calculateValuation(realtime);
+    const dataFetchStart = Date.now();
+    const [{ realtime, kline }, historicalPE, financials, peerComparison, insiderTrading] =
+      await Promise.all([
+        fetchStockData(stockCode),
+        fetchHistoricalValuation(stockCode),
+        fetchFinancialData(stockCode),
+        fetchPeerComparison(stockCode),
+        fetchInsiderTrading(stockCode),
+      ]);
 
-  // 计算历史PE百分位
-  let peStats = null;
-  if (historicalPE.length > 0) {
-    const peResult = calculatePEPercentile(valuation.pe, historicalPE);
-    if (peResult) {
-      const { percentile, zone, ...stats } = peResult;
-      valuation.pePercentile = percentile;
-      valuation.peStats = stats;
-      valuation.historicalPE = historicalPE;
-      peStats = { percentile, zone };
-      console.log(`  ✓ 历史PE数据获取完成: ${historicalPE.length} 个交易日`);
-      console.log(`    - 当前PE百分位: ${percentile.toFixed(1)}% (${zone})`);
+    const technical = calculateTechnicalIndicators(realtime, kline);
+    const valuation = calculateValuation(realtime);
+
+    // 计算历史PE百分位
+    let peStats = null;
+    if (historicalPE.length > 0) {
+      const peResult = calculatePEPercentile(valuation.pe, historicalPE);
+      if (peResult) {
+        const { percentile, zone, ...stats } = peResult;
+        valuation.pePercentile = percentile;
+        valuation.peStats = stats;
+        valuation.historicalPE = historicalPE;
+        peStats = { percentile, zone };
+        console.log(`  ✓ 历史PE数据获取完成: ${historicalPE.length} 个交易日`);
+        console.log(`    - 当前PE百分位: ${percentile.toFixed(1)}% (${zone})`);
+        emitEvent({
+          type: "data_fetched",
+          message: "历史PE数据获取完成",
+          detail: `${historicalPE.length} 个交易日，当前PE百分位: ${percentile.toFixed(1)}% (${zone})`,
+        });
+      }
+    } else {
+      console.warn(`  ⚠ 历史PE数据获取失败，将使用LLM估算`);
+      emitEvent({ type: "debug_log", level: "warn", message: "历史PE数据获取失败，将使用LLM估算" });
     }
-  } else {
-    console.warn(`  ⚠ 历史PE数据获取失败，将使用LLM估算`);
-  }
 
-  if (financials.length > 0) {
-    console.log(`  ✓ 财务数据获取完成: ${financials.length} 期`);
-  }
-  if (peerComparison) {
-    console.log(`  ✓ 同行对比数据获取完成: ${peerComparison.peers.length} 家`);
-  }
-  if (insiderTrading) {
-    console.log(`  ✓ 增减持数据获取完成: ${insiderTrading.managementTrades.length} 条高管记录`);
-  }
-
-  const dataContext: DataContext = {
-    stockCode,
-    realtime,
-    kline,
-    technical,
-    valuation,
-    financials,
-    peerComparison,
-    insiderTrading,
-    summaries: [],
-  };
-
-  console.log(`  ✓ 技术指标计算完成`);
-  console.log(`    - MA5: ${technical.ma5.toFixed(2)}, MA20: ${technical.ma20.toFixed(2)}, MA60: ${technical.ma60.toFixed(2)}`);
-  console.log(`    - 趋势: ${technical.trend}`);
-  console.log(`    - 支撑位: ${technical.supports.map(s => "¥" + s.toFixed(2)).join(", ") || "暂无明显支撑"}`);
-  console.log(`    - 压力位: ${technical.resistances.map(r => "¥" + r.toFixed(2)).join(", ") || "暂无明显压力"}`);
-
-  // ========== 阶段二：分析执行 ==========
-  console.log("\n【阶段二】执行分析...\n");
-
-  const results: StepResult[] = [];
-  const summaries: string[] = [];
-
-  for (const step of ANALYSIS_STEPS) {
-    onProgress?.(step.id, ANALYSIS_STEPS.length, step.title);
-    console.log(`\n[${step.id}/${ANALYSIS_STEPS.length}] ${step.title}...`);
-
-    let content = "";
-    let summary = "";
-
-    // 纯程序化步骤：跳过 LLM
-    const hasDataForStep =
-      (step.id === 3 && financials.length > 0) ||
-      (step.id === 4 && peStats) ||
-      (step.id === 5 && peerComparison) ||
-      (step.id === 6) ||
-      (step.id === 9 && insiderTrading) ||
-      (step.id === 10) ||
-      (step.id === 11);
-
-    if (step.skipLLM || hasDataForStep) {
-      console.log(`  → 纯程序化计算...`);
-      if (step.id === 3 && financials.length > 0) {
-        content = generateFinancialAnalysis(financials);
-      } else if (step.id === 4 && peStats) {
-        content = generatePEPercentileAnalysis(
-          valuation.pe,
-          valuation.peStats!,
-          valuation.pePercentile!,
-          peStats.zone,
-          valuation.historicalPE!
-        );
-      } else if (step.id === 5 && peerComparison) {
-        content = generatePeerComparisonAnalysis(peerComparison, valuation.pb, valuation.pe);
-      } else if (step.id === 6) {
-        content = generateValuationMatchAnalysis(dataContext);
-      } else if (step.id === 9 && insiderTrading) {
-        content = generateInsiderTradingAnalysis(insiderTrading);
-      } else if (step.id === 10) {
-        content = generateMovingAverageAnalysis(technical);
-      } else if (step.id === 11) {
-        content = generateSupportResistanceAnalysis(technical);
-      }
-      console.log(`  ✓ 程序化输出完成`);
-
-      // 程序化步骤也需要摘要
-      if (useContext && step.id < 13) {
-        summary = `${step.title}：已基于实时数据程序化计算`;
-        summaries.push(`【${step.title}】${summary}`);
-      }
-
-      results.push({
-        id: step.id,
-        title: step.title,
-        category: step.category,
-        content,
-        summary,
+    if (financials.length > 0) {
+      console.log(`  ✓ 财务数据获取完成: ${financials.length} 期`);
+      emitEvent({
+        type: "data_fetched",
+        message: "财务数据获取完成",
+        detail: `${financials.length} 期财报数据`,
       });
-      continue;
+    }
+    if (peerComparison) {
+      console.log(`  ✓ 同行对比数据获取完成: ${peerComparison.peers.length} 家`);
+      emitEvent({
+        type: "data_fetched",
+        message: "同行对比数据获取完成",
+        detail: `${peerComparison.peers.length} 家同行公司，所属行业: ${peerComparison.industry}`,
+      });
+    }
+    if (insiderTrading) {
+      console.log(`  ✓ 增减持数据获取完成: ${insiderTrading.managementTrades.length} 条高管记录`);
+      emitEvent({
+        type: "data_fetched",
+        message: "增减持数据获取完成",
+        detail: `${insiderTrading.managementTrades.length} 条高管记录`,
+      });
     }
 
-    // LLM 增强步骤：传入真实数据
-    const ctx: DataContext = {
-      ...dataContext,
-      summaries: useContext ? [...summaries] : undefined,
+    emitEvent({
+      type: "data_fetched",
+      message: "实时行情数据获取完成",
+      detail: `${realtime.name} 当前价: ¥${realtime.price.toFixed(2)}, PE: ${realtime.pe.toFixed(2)}, PB: ${realtime.pb.toFixed(2)}`,
+    });
+
+    const dataContext: DataContext = {
+      stockCode,
+      realtime,
+      kline,
+      technical,
+      valuation,
+      financials,
+      peerComparison,
+      insiderTrading,
+      summaries: [],
     };
 
-    const prompt = step.promptFn(ctx);
+    console.log(`  ✓ 技术指标计算完成`);
+    console.log(`    - MA5: ${technical.ma5.toFixed(2)}, MA20: ${technical.ma20.toFixed(2)}, MA60: ${technical.ma60.toFixed(2)}`);
+    console.log(`    - 趋势: ${technical.trend}`);
+    console.log(`    - 支撑位: ${technical.supports.map(s => "¥" + s.toFixed(2)).join(", ") || "暂无明显支撑"}`);
+    console.log(`    - 压力位: ${technical.resistances.map(r => "¥" + r.toFixed(2)).join(", ") || "暂无明显压力"}`);
 
-    try {
-      content = await callOpenClaw(prompt, { agent: agentId, timeout });
-      console.log(`  ✓ LLM 分析完成`);
+    emitEvent({
+      type: "phase_end",
+      message: "阶段一完成",
+      detail: `数据获取耗时 ${Date.now() - dataFetchStart}ms`,
+    });
 
-      // 提取摘要
-      if (useContext && step.id < 13) {
-        console.log(`  → 提取摘要...`);
-        const summaryPrompt = promptExtractSummary(step.title, content);
-        try {
-          summary = await callOpenClaw(summaryPrompt, {
-            agent: agentId,
-            timeout,
-          });
-          summaries.push(`【${step.title}】${summary}`);
-          console.log(`  ✓ 摘要已提取`);
-        } catch (e) {
-          console.warn(`  ⚠ 摘要提取失败，使用内容前 100 字代替`);
-          summary = content.slice(0, 100) + "...";
+    // ========== 阶段二：分析执行 ==========
+    console.log("\n【阶段二】执行分析...\n");
+    emitEvent({ type: "phase_start", message: "阶段二：执行分析" });
+
+    const results: StepResult[] = [];
+    const summaries: string[] = [];
+
+    for (const step of ANALYSIS_STEPS) {
+      const stepStart = Date.now();
+      onProgress?.(step.id, ANALYSIS_STEPS.length, step.title);
+      console.log(`\n[${step.id}/${ANALYSIS_STEPS.length}] ${step.title}...`);
+
+      const stepType: "llm" | "programmatic" =
+        (step.skipLLM ||
+          (step.id === 3 && financials.length > 0) ||
+          (step.id === 4 && peStats) ||
+          (step.id === 5 && peerComparison) ||
+          (step.id === 9 && insiderTrading))
+          ? "programmatic"
+          : "llm";
+
+      emitEvent({
+        type: "step_start",
+        stepId: step.id,
+        stepTitle: step.title,
+        category: step.category,
+        message: `开始步骤 ${step.id}: ${step.title}`,
+        detail: `类型: ${stepType === "programmatic" ? "程序化" : "LLM"}`,
+      });
+
+      let content = "";
+      let summary = "";
+
+      // 纯程序化步骤：跳过 LLM
+      const hasDataForStep =
+        (step.id === 3 && financials.length > 0) ||
+        (step.id === 4 && peStats) ||
+        (step.id === 5 && peerComparison) ||
+        (step.id === 6) ||
+        (step.id === 9 && insiderTrading) ||
+        (step.id === 10) ||
+        (step.id === 11);
+
+      if (step.skipLLM || hasDataForStep) {
+        console.log(`  → 纯程序化计算...`);
+        emitEvent({
+          type: "debug_log",
+          stepId: step.id,
+          stepTitle: step.title,
+          message: "纯程序化计算...",
+        });
+
+        if (step.id === 3 && financials.length > 0) {
+          content = generateFinancialAnalysis(financials);
+        } else if (step.id === 4 && peStats) {
+          content = generatePEPercentileAnalysis(
+            valuation.pe,
+            valuation.peStats!,
+            valuation.pePercentile!,
+            peStats.zone,
+            valuation.historicalPE!
+          );
+        } else if (step.id === 5 && peerComparison) {
+          content = generatePeerComparisonAnalysis(peerComparison, valuation.pb, valuation.pe);
+        } else if (step.id === 6) {
+          content = generateValuationMatchAnalysis(dataContext);
+        } else if (step.id === 9 && insiderTrading) {
+          content = generateInsiderTradingAnalysis(insiderTrading);
+        } else if (step.id === 10) {
+          content = generateMovingAverageAnalysis(technical);
+        } else if (step.id === 11) {
+          content = generateSupportResistanceAnalysis(technical);
+        }
+        console.log(`  ✓ 程序化输出完成`);
+        emitEvent({
+          type: "debug_log",
+          stepId: step.id,
+          stepTitle: step.title,
+          message: "程序化输出完成",
+          detail: truncateDetail(content.slice(0, 500)),
+        });
+
+        // 程序化步骤也需要摘要
+        if (useContext && step.id < 13) {
+          summary = `${step.title}：已基于实时数据程序化计算`;
           summaries.push(`【${step.title}】${summary}`);
         }
+
+        const duration = Date.now() - stepStart;
+        emitEvent({
+          type: "step_complete",
+          stepId: step.id,
+          stepTitle: step.title,
+          category: step.category,
+          message: `步骤 ${step.id} 完成`,
+          durationMs: duration,
+        });
+
+        results.push({
+          id: step.id,
+          title: step.title,
+          category: step.category,
+          content,
+          summary,
+        });
+        continue;
       }
 
-      results.push({
-        id: step.id,
-        title: step.title,
-        category: step.category,
-        content,
-        summary,
-      });
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      console.error(`  ✗ 失败: ${errMsg}`);
+      // LLM 增强步骤：传入真实数据
+      const ctx: DataContext = {
+        ...dataContext,
+        summaries: useContext ? [...summaries] : undefined,
+      };
 
-      results.push({
-        id: step.id,
-        title: step.title,
-        category: step.category,
-        content: `分析失败: ${errMsg}`,
-        summary: `分析失败`,
+      const prompt = step.promptFn(ctx);
+      emitEvent({
+        type: "debug_log",
+        stepId: step.id,
+        stepTitle: step.title,
+        message: "构建提示词完成",
+        detail: truncateDetail(prompt),
       });
+
+      try {
+        emitEvent({
+          type: "llm_call_start",
+          stepId: step.id,
+          stepTitle: step.title,
+          message: "调用 LLM...",
+        });
+        const llmStart = Date.now();
+        content = await callLLM(prompt, { timeout });
+        const llmDuration = Date.now() - llmStart;
+        console.log(`  ✓ LLM 分析完成`);
+        emitEvent({
+          type: "llm_call_end",
+          stepId: step.id,
+          stepTitle: step.title,
+          message: "LLM 响应完成",
+          durationMs: llmDuration,
+        });
+        emitEvent({
+          type: "debug_log",
+          stepId: step.id,
+          stepTitle: step.title,
+          message: "LLM 响应内容",
+          detail: truncateDetail(content),
+        });
+
+        // 提取摘要
+        if (useContext && step.id < 13) {
+          console.log(`  → 提取摘要...`);
+          emitEvent({
+            type: "summary_extract",
+            stepId: step.id,
+            stepTitle: step.title,
+            message: "提取摘要...",
+          });
+          const summaryPrompt = promptExtractSummary(step.title, content);
+          try {
+            const summaryStart = Date.now();
+            summary = await callLLM(summaryPrompt, { timeout });
+            emitEvent({
+              type: "debug_log",
+              stepId: step.id,
+              stepTitle: step.title,
+              message: "摘要提取完成",
+              detail: truncateDetail(summary),
+            });
+            summaries.push(`【${step.title}】${summary}`);
+            console.log(`  ✓ 摘要已提取`);
+          } catch (e) {
+            const errMsg = e instanceof Error ? e.message : String(e);
+            console.warn(`  ⚠ 摘要提取失败，使用内容前 100 字代替`);
+            emitEvent({
+              type: "debug_log",
+              stepId: step.id,
+              stepTitle: step.title,
+              message: "摘要提取失败",
+              detail: errMsg,
+            });
+            summary = content.slice(0, 100) + "...";
+            summaries.push(`【${step.title}】${summary}`);
+          }
+        }
+
+        const duration = Date.now() - stepStart;
+        emitEvent({
+          type: "step_complete",
+          stepId: step.id,
+          stepTitle: step.title,
+          category: step.category,
+          message: `步骤 ${step.id} 完成`,
+          durationMs: duration,
+        });
+
+        results.push({
+          id: step.id,
+          title: step.title,
+          category: step.category,
+          content,
+          summary,
+        });
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        console.error(`  ✗ 失败: ${errMsg}`);
+        emitEvent({
+          type: "step_error",
+          stepId: step.id,
+          stepTitle: step.title,
+          category: step.category,
+          message: `步骤 ${step.id} 失败`,
+          error: errMsg,
+          durationMs: Date.now() - stepStart,
+        });
+
+        results.push({
+          id: step.id,
+          title: step.title,
+          category: step.category,
+          content: `分析失败: ${errMsg}`,
+          summary: `分析失败`,
+        });
+      }
     }
-  }
 
-  return results;
+    emitEvent({
+      type: "phase_end",
+      message: "阶段二完成",
+    });
+    emitEvent({
+      type: "complete",
+      message: "分析完成",
+      detail: `共 ${results.length} 个步骤`,
+    });
+
+    return results;
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    emitEvent({
+      type: "error",
+      message: "分析过程中发生致命错误",
+      error: errMsg,
+    });
+    throw error;
+  }
 }

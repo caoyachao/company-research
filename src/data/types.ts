@@ -117,6 +117,7 @@ export interface MajorHolder {
   shares: number;
   change: number;
   changeDirection: string;
+  changeRatio?: number;
 }
 
 export interface InsiderTrading {

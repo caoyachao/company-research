@@ -14,7 +14,7 @@ function buildContextBlock(ctx: DataContext): string {
 export function prompt1_BusinessModel(ctx: DataContext): string {
   return `请分析股票 ${ctx.stockCode}（${ctx.realtime.name}）。${buildContextBlock(ctx)}
 
-当前股价：¥${ctx.realtime.price.toFixed(2)}，市盈率：${ctx.valuation.pe.toFixed(2)}，市净率：${ctx.valuation.pb.toFixed(2)}，总市值：${(ctx.valuation.marketCap / 1e8).toFixed(2)}亿元。
+当前股价：¥${ctx.realtime.price.toFixed(2)}，市盈率：${ctx.valuation.pe.toFixed(2)}，市净率：${ctx.valuation.pb.toFixed(2)}，总市值：${(ctx.valuation.marketCap ).toFixed(2)}亿元。
 
 请用一句话概括这家公司的核心商业模式，并列出它最主要的收入来源是什么。`;
 }
@@ -22,7 +22,7 @@ export function prompt1_BusinessModel(ctx: DataContext): string {
 export function prompt2_Competitors(ctx: DataContext): string {
   return `请分析股票 ${ctx.stockCode}（${ctx.realtime.name}）。${buildContextBlock(ctx)}
 
-当前股价：¥${ctx.realtime.price.toFixed(2)}，市盈率：${ctx.valuation.pe.toFixed(2)}，总市值：${(ctx.valuation.marketCap / 1e8).toFixed(2)}亿元。
+当前股价：¥${ctx.realtime.price.toFixed(2)}，市盈率：${ctx.valuation.pe.toFixed(2)}，总市值：${(ctx.valuation.marketCap ).toFixed(2)}亿元。
 
 请列出这家公司在行业中的前三大竞争对手，并说明每家公司的核心优势分别是什么。`;
 }
@@ -51,7 +51,7 @@ ${rows}
 - 当前股价：¥${ctx.realtime.price.toFixed(2)}
 - 市盈率：${ctx.valuation.pe.toFixed(2)}
 - 市净率：${ctx.valuation.pb.toFixed(2)}
-- 总市值：${(ctx.valuation.marketCap / 1e8).toFixed(2)}亿元
+- 总市值：${(ctx.valuation.marketCap ).toFixed(2)}亿元
 ${dataBlock}
 
 请分析这家公司近三年的营收和净利润变化趋势。如果上面提供了真实财务数据，请基于真实数据分析；如果没有数据，请基于你掌握的信息分析。`;
@@ -66,7 +66,7 @@ export function prompt4_PERatio(ctx: DataContext): string {
 - 当前股价：¥${ctx.realtime.price.toFixed(2)}
 - 市盈率（PE）：${ctx.valuation.pe.toFixed(2)}
 - 市净率（PB）：${ctx.valuation.pb.toFixed(2)}
-- 总市值：${(ctx.valuation.marketCap / 1e8).toFixed(2)}亿元
+- 总市值：${(ctx.valuation.marketCap ).toFixed(2)}亿元
 
 请用历史百分位法计算这只股票当前市盈率在过去五年中的位置，并告诉我它处于高估区、低估区还是合理。
 
@@ -114,7 +114,7 @@ export function prompt7_FinancialRisks(ctx: DataContext): string {
 - 当前股价：¥${ctx.realtime.price.toFixed(2)}
 - 市盈率：${ctx.valuation.pe.toFixed(2)}
 - 市净率：${ctx.valuation.pb.toFixed(2)}
-- 总市值：${(ctx.valuation.marketCap / 1e8).toFixed(2)}亿元
+- 总市值：${(ctx.valuation.marketCap ).toFixed(2)}亿元
 
 请列出这只股票在财务报表中最容易被粉饰的三个科目，并解释为什么这些科目容易出问题。`;
 }
@@ -124,7 +124,7 @@ export function prompt8_CustomerSupplierRisk(ctx: DataContext): string {
 
 【当前估值数据】
 - 当前股价：¥${ctx.realtime.price.toFixed(2)}
-- 总市值：${(ctx.valuation.marketCap / 1e8).toFixed(2)}亿元
+- 总市值：${(ctx.valuation.marketCap ).toFixed(2)}亿元
 
 请分析这家公司是否存在单一客户依赖或单一供应商依赖，如果有的话分别占比是多少。`;
 }
@@ -158,7 +158,7 @@ ${trades ? "\n主要交易记录：\n" + trades : ""}
 
 【当前估值数据】
 - 当前股价：¥${ctx.realtime.price.toFixed(2)}
-- 总市值：${(ctx.valuation.marketCap / 1e8).toFixed(2)}亿元
+- 总市值：${(ctx.valuation.marketCap ).toFixed(2)}亿元
 ${dataBlock}
 
 请分析这只股票过去一年内大股东和高管的增减持情况，并告诉我整体是净买入还是净卖出。如果上面提供了真实数据，请基于真实数据分析；如果没有数据，请基于你掌握的信息分析。`;
@@ -205,7 +205,7 @@ export function prompt12_ScenarioPlanning(ctx: DataContext): string {
 - 当前股价：¥${ctx.realtime.price.toFixed(2)}
 - 市盈率：${ctx.valuation.pe.toFixed(2)}
 - 市净率：${ctx.valuation.pb.toFixed(2)}
-- 总市值：${(ctx.valuation.marketCap / 1e8).toFixed(2)}亿元
+- 总市值：${(ctx.valuation.marketCap ).toFixed(2)}亿元
 - 技术面趋势：${t.trend}
 - 支撑位：${t.supports.map(s => "¥" + s.toFixed(2)).join("、") || "暂无明显支撑"}
 - 压力位：${t.resistances.map(r => "¥" + r.toFixed(2)).join("、") || "暂无明显压力"}
@@ -223,7 +223,7 @@ export function prompt13_FinalRecommendation(ctx: DataContext): string {
 - 当前股价：¥${ctx.realtime.price.toFixed(2)}
 - 市盈率：${ctx.valuation.pe.toFixed(2)}
 - 市净率：${ctx.valuation.pb.toFixed(2)}
-- 总市值：${(ctx.valuation.marketCap / 1e8).toFixed(2)}亿元
+- 总市值：${(ctx.valuation.marketCap ).toFixed(2)}亿元
 - 技术面趋势：${t.trend}
 
 请用不超过一百字给出这只股票当前的操作建议，包括买入、持有还是卖出，以及对应的仓位建议。`;

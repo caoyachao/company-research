@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>股票全面分析</title>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-light: #eff6ff;
+      --success: #10b981;
+      --success-light: #ecfdf5;
+      --warning: #f59e0b;
+      --warning-light: #fffbeb;
+      --error: #ef4444;
+      --error-light: #fef2f2;
+      --bg: #f5f7fa;
+      --card: #ffffff;
+      --text: #1f2937;
+      --text-secondary: #6b7280;
+      --border: #e5e7eb;
+      --font-mono: "SF Mono", Monaco, "Cascadia Code", monospace;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+    .container { max-width: 900px; margin: 0 auto; padding: 32px 20px; }
+    h1 { font-size: 28px; font-weight: 700; margin-bottom: 6px; }
+    .subtitle { color: var(--text-secondary); font-size: 15px; margin-bottom: 28px; }
+
+    /* Input */
+    .input-card {
+      background: var(--card);
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      margin-bottom: 24px;
+    }
+    .input-group {
+      display: flex;
+      gap: 12px;
+    }
+    .input-group input {
+      flex: 1;
+      padding: 12px 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 16px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .input-group input:focus { border-color: var(--primary); }
+    .input-group input::placeholder { color: #9ca3af; }
+    .input-group button {
+      padding: 12px 28px;
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .input-group button:hover:not(:disabled) { background: #1d4ed8; }
+    .input-group button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    /* Error banner */
+    .error-banner {
+      display: none;
+      margin-bottom: 20px;
+      padding: 14px 18px;
+      background: var(--error-light);
+      color: var(--error);
+      border-radius: 8px;
+      border-left: 4px solid var(--error);
+      font-size: 14px;
+    }
+    .error-banner.active { display: block; }
+
+    /* Progress section */
+    .progress-section { display: none; }
+    .progress-section.active { display: block; }
+
+    .phase-label {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--primary);
+      margin-bottom: 14px;
+      padding: 8px 14px;
+      background: var(--primary-light);
+      border-radius: 6px;
+      display: inline-block;
+    }
+
+    /* Steps */
+    .steps { display: flex; flex-direction: column; gap: 8px; }
+    .step {
+      background: var(--card);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      transition: all 0.3s ease;
+    }
+    .step.pending { border-left: 3px solid #d1d5db; }
+    .step.running { border-left: 3px solid var(--primary); box-shadow: 0 2px 8px rgba(37,99,235,0.08); }
+    .step.complete { border-left: 3px solid var(--success); }
+    .step.error { border-left: 3px solid var(--error); }
+
+    .step-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 18px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .step-header:hover { background: #fafafa; }
+
+    .step-number {
+      width: 30px; height: 30px;
+      border-radius: 50%;
+      background: #f3f4f6;
+      color: var(--text-secondary);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 600;
+      flex-shrink: 0;
+      transition: all 0.3s;
+    }
+    .step.running .step-number { background: var(--primary-light); color: var(--primary); }
+    .step.complete .step-number { background: var(--success-light); color: var(--success); }
+    .step.error .step-number { background: var(--error-light); color: var(--error); }
+
+    .step-title { font-weight: 500; font-size: 14.5px; flex: 1; }
+    .step-badges { display: flex; gap: 6px; align-items: center; }
+    .badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+    .badge-llm { background: var(--primary-light); color: var(--primary); }
+    .badge-prog { background: #f3f4f6; color: var(--text-secondary); }
+    .step-status {
+      font-size: 12.5px;
+      color: var(--text-secondary);
+      min-width: 80px;
+      text-align: right;
+    }
+    .step.running .step-status { color: var(--primary); }
+    .step.complete .step-status { color: var(--success); }
+    .step.error .step-status { color: var(--error); }
+
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Debug panel */
+    .debug-panel {
+      display: none;
+      border-top: 1px solid var(--border);
+      background: #fafafa;
+    }
+    .debug-panel.open { display: block; }
+
+    .debug-logs {
+      padding: 12px 18px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .debug-log {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      padding: 5px 0;
+      border-bottom: 1px solid #f0f0f0;
+      line-height: 1.5;
+    }
+    .debug-log:last-child { border-bottom: none; }
+    .debug-log .log-time { color: #9ca3af; margin-right: 8px; font-size: 11px; }
+    .debug-log .log-level {
+      display: inline-block;
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      margin-right: 8px;
+      font-weight: 600;
+    }
+    .debug-log .log-level.info { background: #e5e7eb; color: #4b5563; }
+    .debug-log .log-level.warn { background: var(--warning-light); color: var(--warning); }
+    .debug-log .log-level.error { background: var(--error-light); color: var(--error); }
+    .debug-log .log-level.debug { background: #dbeafe; color: var(--primary); }
+    .debug-log .log-msg { color: var(--text); }
+    .debug-log .log-detail {
+      color: #6b7280;
+      margin-top: 3px;
+      padding-left: 80px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .debug-log .log-detail.collapsed {
+      max-height: 60px;
+      overflow: hidden;
+      position: relative;
+    }
+    .debug-log .log-detail.collapsed::after {
+      content: "";
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: 20px;
+      background: linear-gradient(transparent, #fafafa);
+    }
+    .expand-btn {
+      color: var(--primary);
+      cursor: pointer;
+      font-size: 11px;
+      margin-left: 80px;
+      margin-top: 2px;
+    }
+
+    .debug-toggle {
+      padding: 6px 18px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: none;
+    }
+    .debug-toggle.visible { display: block; }
+    .debug-toggle:hover { color: var(--primary); }
+
+    /* Result section */
+    .result-card {
+      display: none;
+      background: var(--card);
+      border-radius: 12px;
+      padding: 28px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      text-align: center;
+      margin-top: 24px;
+    }
+    .result-card.active { display: block; }
+    .result-card h2 { font-size: 20px; margin-bottom: 8px; }
+    .result-card p { color: var(--text-secondary); margin-bottom: 20px; }
+    .result-card .btn-group { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .result-card a.btn {
+      display: inline-block;
+      padding: 12px 24px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 500;
+      transition: opacity 0.2s;
+    }
+    .result-card a.btn:hover { opacity: 0.9; }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-success { background: var(--success); color: white; }
+
+    @media (max-width: 640px) {
+      .container { padding: 20px 16px; }
+      h1 { font-size: 22px; }
+      .input-group { flex-direction: column; }
+      .input-group button { width: 100%; }
+      .step-header { padding: 12px 14px; }
+      .step-badges { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>股票全面分析</h1>
+    <p class="subtitle">输入股票代码，启动 13 步 AI 深度分析</p>
+
+    <div class="error-banner" id="errorBanner"></div>
+
+    <div class="input-card">
+      <div class="input-group">
+        <input
+          type="text"
+          id="stockInput"
+          placeholder="例如: 600519.SH 或 000001"
+          autocomplete="off"
+        />
+        <button id="analyzeBtn" onclick="startAnalysis()">开始分析</button>
+      </div>
+    </div>
+
+    <div class="progress-section" id="progressSection">
+      <div class="phase-label" id="phaseLabel">准备中...</div>
+      <div class="steps" id="stepsContainer"></div>
+    </div>
+
+    <div class="result-card" id="resultCard">
+      <h2>分析完成</h2>
+      <p>报告已生成，点击下方按钮查看</p>
+      <div class="btn-group">
+        <a id="reportLink" href="#" target="_blank" class="btn btn-success">查看 HTML 报告</a>
+        <a id="mdReportLink" href="#" target="_blank" class="btn btn-primary">查看 Markdown 报告</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ===== State =====
+    let eventSource = null;
+    let isCompleted = false;
+    const TOTAL_STEPS = 13;
+    const stepElements = {}; // stepId -> { header, panel, logsEl, toggle, hasLogs }
+
+    // ===== Init =====
+    function initSteps() {
+      const container = document.getElementById('stepsContainer');
+      container.innerHTML = '';
+      for (let i = 1; i <= TOTAL_STEPS; i++) {
+        const stepEl = document.createElement('div');
+        stepEl.className = 'step pending';
+        stepEl.id = `step-${i}`;
+        stepEl.innerHTML = `
+          <div class="step-header" onclick="toggleDebug(${i})">
+            <span class="step-number">${i}</span>
+            <span class="step-title">等待中...</span>
+            <span class="step-badges"></span>
+            <span class="step-status">等待中</span>
+          </div>
+          <div class="debug-toggle" id="toggle-${i}" onclick="event.stopPropagation(); toggleDebug(${i})">查看调试日志</div>
+          <div class="debug-panel" id="panel-${i}">
+            <div class="debug-logs" id="logs-${i}"></div>
+          </div>
+        `;
+        container.appendChild(stepEl);
+        stepElements[i] = {
+          el: stepEl,
+          header: stepEl.querySelector('.step-header'),
+          title: stepEl.querySelector('.step-title'),
+          badges: stepEl.querySelector('.step-badges'),
+          status: stepEl.querySelector('.step-status'),
+          panel: stepEl.querySelector(`#panel-${i}`),
+          logsEl: stepEl.querySelector(`#logs-${i}`),
+          toggle: stepEl.querySelector(`#toggle-${i}`),
+          hasLogs: false,
+        };
+      }
+    }
+
+    function toggleDebug(stepId) {
+      const s = stepElements[stepId];
+      if (!s || !s.hasLogs) return;
+      s.panel.classList.toggle('open');
+      s.toggle.textContent = s.panel.classList.contains('open') ? '收起调试日志' : '查看调试日志';
+    }
+
+    function updateStep(stepId, updates) {
+      const s = stepElements[stepId];
+      if (!s) return;
+      if (updates.title) s.title.textContent = updates.title;
+      if (updates.status) s.status.textContent = updates.status;
+      if (updates.state) {
+        s.el.className = `step ${updates.state}`;
+      }
+      if (updates.badges) {
+        s.badges.innerHTML = updates.badges;
+      }
+    }
+
+    function formatTime(ts) {
+      const d = new Date(ts);
+      return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}.${String(d.getMilliseconds()).padStart(3,'0')}`;
+    }
+
+    function addDebugLog(stepId, level, message, detail) {
+      const s = stepElements[stepId];
+      if (!s) return;
+      const logEl = document.createElement('div');
+      logEl.className = 'debug-log';
+
+      let detailHtml = '';
+      if (detail) {
+        const isLong = detail.length > 200;
+        const detailId = `detail-${stepId}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+        if (isLong) {
+          detailHtml = `
+            <div class="log-detail collapsed" id="${detailId}">${escapeHtml(detail)}</div>
+            <div class="expand-btn" onclick="toggleDetail('${detailId}', this)">展开</div>
+          `;
+        } else {
+          detailHtml = `<div class="log-detail">${escapeHtml(detail)}</div>`;
+        }
+      }
+
+      logEl.innerHTML = `
+        <span class="log-time">${formatTime(Date.now())}</span>
+        <span class="log-level ${level}">${level.toUpperCase()}</span>
+        <span class="log-msg">${escapeHtml(message)}</span>
+        ${detailHtml}
+      `;
+      s.logsEl.appendChild(logEl);
+      s.hasLogs = true;
+      s.toggle.classList.add('visible');
+    }
+
+    function toggleDetail(id, btn) {
+      const el = document.getElementById(id);
+      if (el.classList.contains('collapsed')) {
+        el.classList.remove('collapsed');
+        btn.textContent = '收起';
+      } else {
+        el.classList.add('collapsed');
+        btn.textContent = '展开';
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function setPhase(label) {
+      document.getElementById('phaseLabel').textContent = label;
+    }
+
+    function showError(msg) {
+      const banner = document.getElementById('errorBanner');
+      banner.textContent = msg;
+      banner.classList.add('active');
+    }
+
+    function hideError() {
+      document.getElementById('errorBanner').classList.remove('active');
+    }
+
+    function resetUI() {
+      isCompleted = false;
+      hideError();
+      document.getElementById('resultCard').classList.remove('active');
+      document.getElementById('progressSection').classList.add('active');
+      document.getElementById('analyzeBtn').disabled = true;
+      document.getElementById('analyzeBtn').textContent = '分析中...';
+      setPhase('准备中...');
+      initSteps();
+    }
+
+    function cleanup() {
+      document.getElementById('analyzeBtn').disabled = false;
+      document.getElementById('analyzeBtn').textContent = '开始分析';
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+    }
+
+    // ===== Analysis =====
+    function startAnalysis() {
+      const stockCode = document.getElementById('stockInput').value.trim();
+      if (!stockCode) {
+        showError('请输入股票代码');
+        return;
+      }
+
+      // Reset UI
+      resetUI();
+
+      // Close previous connection if any
+      if (eventSource) eventSource.close();
+
+      // Start SSE connection
+      eventSource = new EventSource(`/api/analyze?stock=${encodeURIComponent(stockCode)}`);
+
+      eventSource.addEventListener('connected', (e) => {
+        const data = JSON.parse(e.data);
+        console.log('Connected:', data);
+      });
+
+      eventSource.addEventListener('phase_start', (e) => {
+        const data = JSON.parse(e.data);
+        setPhase(data.message || data.phase || '分析中...');
+      });
+
+      eventSource.addEventListener('phase_end', (e) => {
+        const data = JSON.parse(e.data);
+        console.log('Phase end:', data.message);
+      });
+
+      eventSource.addEventListener('data_fetched', (e) => {
+        const data = JSON.parse(e.data);
+        console.log('Data fetched:', data.message, data.detail);
+      });
+
+      eventSource.addEventListener('step_start', (e) => {
+        const data = JSON.parse(e.data);
+        const badges = data.detail?.includes('程序化')
+          ? '<span class="badge badge-prog">程序化</span>'
+          : '<span class="badge badge-llm">LLM</span>';
+        updateStep(data.stepId, {
+          title: data.stepTitle,
+          status: '进行中...',
+          state: 'running',
+          badges,
+        });
+      });
+
+      eventSource.addEventListener('debug_log', (e) => {
+        const data = JSON.parse(e.data);
+        if (data.stepId) {
+          addDebugLog(data.stepId, data.level || 'debug', data.message, data.detail);
+        }
+      });
+
+      eventSource.addEventListener('llm_call_start', (e) => {
+        const data = JSON.parse(e.data);
+        if (data.stepId) {
+          updateStep(data.stepId, { status: '调用 LLM...' });
+          addDebugLog(data.stepId, 'info', '调用 LLM...', null);
+        }
+      });
+
+      eventSource.addEventListener('llm_call_end', (e) => {
+        const data = JSON.parse(e.data);
+        if (data.stepId) {
+          addDebugLog(data.stepId, 'info', `LLM 响应完成`, `耗时 ${data.durationMs}ms`);
+        }
+      });
+
+      eventSource.addEventListener('summary_extract', (e) => {
+        const data = JSON.parse(e.data);
+        if (data.stepId) {
+          updateStep(data.stepId, { status: '提取摘要...' });
+        }
+      });
+
+      eventSource.addEventListener('step_complete', (e) => {
+        const data = JSON.parse(e.data);
+        const durationText = data.durationMs ? ` (${data.durationMs}ms)` : '';
+        updateStep(data.stepId, {
+          status: `完成${durationText}`,
+          state: 'complete',
+        });
+      });
+
+      eventSource.addEventListener('step_error', (e) => {
+        const data = JSON.parse(e.data);
+        updateStep(data.stepId, {
+          status: '失败',
+          state: 'error',
+        });
+        addDebugLog(data.stepId, 'error', '步骤执行失败', data.error);
+      });
+
+      eventSource.addEventListener('report_ready', (e) => {
+        const data = JSON.parse(e.data);
+        document.getElementById('reportLink').href = data.htmlPath;
+        document.getElementById('mdReportLink').href = 'file://' + data.markdownPath;
+        document.getElementById('resultCard').classList.add('active');
+        isCompleted = true;
+      });
+
+      eventSource.addEventListener('error', (e) => {
+        let msg = '分析过程中发生错误';
+        try {
+          const data = JSON.parse(e.data);
+          msg = data.error || msg;
+        } catch {}
+        showError(msg);
+        cleanup();
+      });
+
+      eventSource.addEventListener('done', () => {
+        isCompleted = true;
+        cleanup();
+      });
+
+      eventSource.onerror = () => {
+        // Only show error if we haven't already completed successfully
+        if (!isCompleted) {
+          showError('连接中断，请重试');
+        }
+        cleanup();
+      };
+    }
+
+    // Allow Enter key
+    document.getElementById('stockInput').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') startAnalysis();
+    });
+  </script>
+</body>
+</html>

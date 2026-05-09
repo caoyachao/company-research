@@ -130,8 +130,16 @@ export async function fetchFinancialData(stockCode: string): Promise<FinancialDa
     return cached;
   }
 
-  // 获取最近 3 年年报: 2024, 2023, 2022
-  const reportDates = ["20241231", "20231231", "20221231"];
+  // 动态计算最近 3 个年报期
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  // 年报披露截止日为次年4月30日，如果当前日期在4月30日之前，上一年年报可能尚未全部披露
+  const latestReportYear = now.getMonth() < 4 ? currentYear - 2 : currentYear - 1;
+  const reportDates = [
+    `${latestReportYear}1231`,
+    `${latestReportYear - 1}1231`,
+    `${latestReportYear - 2}1231`,
+  ];
 
   const script = `
 import akshare as ak
@@ -310,23 +318,51 @@ try:
             except:
                 continue
 
-    # 2. 十大股东（最新报告期）
+    # 2. 十大流通股东（最新报告期）- 使用 stock_gdfx_free_top_10_em 获取持股变动
     holders = []
     try:
-        holder_df = ak.stock_main_stock_holder(stock="${pureCode}")
-        latest_date = holder_df["截至日期"].max()
-        latest_holders = holder_df[holder_df["截至日期"] == latest_date].head(10)
-        for _, row in latest_holders.iterrows():
+        prefix = "sh" if "${pureCode}".startswith("6") else "sz"
+        holder_df = ak.stock_gdfx_free_top_10_em(symbol=prefix + "${pureCode}", date="latest")
+        for _, row in holder_df.iterrows():
             try:
-                shares_val = row.get("持股数量")
+                change_raw = row.get("增减")
+                change_ratio = row.get("变动比率")
+                shares_val = row.get("持股数")
+
+                change_dir = "不变"
+                change_num = 0
+                if pd.isna(change_raw) or str(change_raw) == "不变":
+                    change_dir = "不变"
+                elif str(change_raw) == "新进":
+                    change_dir = "新进"
+                elif isinstance(change_raw, (int, float)):
+                    change_num = float(change_raw)
+                    change_dir = "增持" if change_num > 0 else "减持"
+                else:
+                    # 尝试解析字符串格式的数字
+                    try:
+                        change_num = float(str(change_raw).replace(",", ""))
+                        change_dir = "增持" if change_num > 0 else "减持"
+                    except:
+                        change_dir = str(change_raw)
+
+                ratio = None
+                if pd.notna(change_ratio):
+                    try:
+                        ratio = float(change_ratio)
+                    except:
+                        pass
+
                 holders.append({
                     "name": str(row.get("股东名称", "")),
-                    "holderType": str(row.get("股本性质", "")),
+                    "holderType": str(row.get("股东性质", "")),
                     "shares": float(shares_val) if pd.notna(shares_val) else 0,
-                    "change": 0,
-                    "changeDirection": "未知"
+                    "change": abs(change_num),
+                    "changeDirection": change_dir,
+                    "changeRatio": ratio
                 })
-            except:
+            except Exception as e:
+                print(f"Holder row parse error: {e}", file=__import__("sys").stderr)
                 continue
     except Exception as e:
         print(f"Holder fetch skipped: {e}", file=__import__("sys").stderr)

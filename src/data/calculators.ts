@@ -314,13 +314,16 @@ export function generateFinancialAnalysis(financials: FinancialData[]): string {
     return "暂无财务数据。";
   }
 
-  const rows = financials.map((f) => {
+  // 按年份升序排列展示
+  const sorted = [...financials].sort((a, b) => a.year - b.year);
+  const latest = sorted[sorted.length - 1];
+
+  const rows = sorted.map((f) => {
     const revGrowthStr = f.revenueGrowth > 0 ? `+${f.revenueGrowth.toFixed(2)}%` : `${f.revenueGrowth.toFixed(2)}%`;
     const profitGrowthStr = f.profitGrowth > 0 ? `+${f.profitGrowth.toFixed(2)}%` : `${f.profitGrowth.toFixed(2)}%`;
     return `| ${f.year} | ${f.revenue.toFixed(2)} | ${revGrowthStr} | ${f.netProfit.toFixed(2)} | ${profitGrowthStr} | ${f.roe.toFixed(2)}% | ${f.grossMargin.toFixed(2)}% |`;
   }).join("\n");
 
-  const latest = financials[financials.length - 1];
   const trend =
     latest.revenueGrowth > 20
       ? "高速增长"
@@ -431,8 +434,14 @@ export function generateInsiderTradingAnalysis(insider: InsiderTrading): string 
     ? majorHolders
         .slice(0, 5)
         .map(
-          (h) =>
-            `| ${h.name} | ${h.holderType} | ${(h.shares / 1e4).toFixed(2)}万股 | ${h.changeDirection} |`
+          (h) => {
+            let changeStr = h.changeDirection;
+            if (h.changeRatio !== undefined && h.changeRatio !== null && !isNaN(h.changeRatio)) {
+              const arrow = h.changeRatio > 0 ? "📈" : h.changeRatio < 0 ? "📉" : "➡️";
+              changeStr += ` ${arrow} ${Math.abs(h.changeRatio).toFixed(2)}%`;
+            }
+            return `| ${h.name} | ${h.holderType} | ${(h.shares / 1e4).toFixed(2)}万股 | ${changeStr} |`;
+          }
         )
         .join("\n")
     : "暂无大股东持股变动数据。";
@@ -442,6 +451,22 @@ export function generateInsiderTradingAnalysis(insider: InsiderTrading): string 
     : mgmtNetBuyAmount < 0
       ? `净卖出 ¥${Math.abs(mgmtNetBuyAmount).toFixed(2)}（${Math.abs(mgmtNetBuyCount)}人次）`
       : "无净买卖";
+
+  // 计算大股东整体变动趋势
+  const increaseCount = majorHolders.filter(h => h.changeDirection === "增持" || h.changeDirection === "新进").length;
+  const decreaseCount = majorHolders.filter(h => h.changeDirection === "减持").length;
+  const unchangedCount = majorHolders.filter(h => h.changeDirection === "不变").length;
+
+  let holderSummary = "";
+  if (majorHolders.length > 0) {
+    if (increaseCount > decreaseCount) {
+      holderSummary = `大股东中 ${increaseCount} 家增持/新进，${decreaseCount} 家减持，机构资金呈流入态势。`;
+    } else if (decreaseCount > increaseCount) {
+      holderSummary = `大股东中 ${decreaseCount} 家减持，${increaseCount} 家增持/新进，机构资金呈流出态势。`;
+    } else {
+      holderSummary = `大股东持股变动相对平衡，增持/新进 ${increaseCount} 家，减持 ${decreaseCount} 家。`;
+    }
+  }
 
   return `## 大股东与高管增减持分析
 
@@ -458,6 +483,8 @@ ${mgmtText}` : mgmtText}
 ${majorHolders.length > 0 ? `| 股东名称 | 类型 | 持股 | 变动 |
 |---------|------|------|------|
 ${holderText}` : holderText}
+
+${holderSummary}
 
 ${
   mgmtNetBuyAmount > 0

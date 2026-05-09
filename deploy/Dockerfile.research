@@ -1,0 +1,39 @@
+# Stock Analysis Tool - Docker Image
+# build context: /Users/yachaocao/Projects (parent of both repos)
+
+FROM node:22-slim
+
+# Install Python3, pip, and build tools for akshare/pandas dependencies
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-venv \
+    build-essential \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app directory
+WORKDIR /app
+
+# Copy package files from company_research/ subdirectory (relative to context)
+COPY company_research/package.json company_research/pnpm-lock.yaml company_research/tsconfig.json ./
+COPY company_research/scripts ./scripts
+RUN npm install -g pnpm && pnpm install --frozen-lockfile
+
+# Install Python dependencies in a virtual environment
+RUN python3 -m venv /opt/venv && \
+    /opt/venv/bin/pip install --upgrade pip && \
+    /opt/venv/bin/pip install akshare pandas
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy source code
+COPY company_research/src ./src
+
+# Create directories for runtime data
+RUN mkdir -p reports cache
+
+# Expose web server port
+EXPOSE 3000
+
+# Default: run the web UI server
+CMD ["pnpm", "web"]

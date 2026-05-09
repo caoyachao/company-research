@@ -1,0 +1,21 @@
+# LLM Gateway SDK - Docker Image
+# build context: /Users/yachaocao/Projects (parent of both repos)
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Copy source from llm-gateway-sdk/ subdirectory (relative to context)
+COPY llm-gateway-sdk/pyproject.toml ./
+COPY llm-gateway-sdk/llm_gateway_sdk ./llm_gateway_sdk
+COPY llm-gateway-sdk/models.yaml ./
+RUN pip install --no-cache-dir -e "."
+
+# Create cache directory
+RUN mkdir -p cache
+
+# Expose API port
+EXPOSE 8000
+
+# Run the FastAPI server
+CMD ["python", "-m", "llm_gateway_sdk.server", "--port", "8000", "--host", "0.0.0.0"]
