@@ -1,6 +1,15 @@
 import https from "https";
 import iconv from "iconv-lite";
-import type { RealtimeQuote, KLineData, FinancialData, HistoricalValuationPoint, PeerComparison } from "./types.js";
+import type {
+  RealtimeQuote,
+  KLineData,
+  FinancialData,
+  HistoricalValuationPoint,
+  PeerComparison,
+  FinancialRiskMetrics,
+  MainBusinessComposition,
+  MainBusinessSegment,
+} from "./types.js";
 
 function requestBuffer(url: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -451,4 +460,208 @@ export async function fetchPeerComparisonFromDatacenter(
   }));
 
   return { industry, peers };
+}
+
+// ---- 财务风险指标（步骤 7） ----
+
+interface RawBalanceRow {
+  REPORT_DATE: string;
+  TOTAL_ASSETS: number | null;
+  TOTAL_LIABILITIES: number | null;
+  TOTAL_EQUITY: number | null;
+  ACCOUNTS_RECE: number | null;
+  ACCOUNTS_RECE_RATIO: number | null;
+  INVENTORY: number | null;
+  INVENTORY_RATIO: number | null;
+  MONETARYFUNDS: number | null;
+  DEBT_ASSET_RATIO: number | null;
+}
+
+interface RawIncomeRow {
+  REPORT_DATE: string;
+  TOTAL_OPERATE_INCOME: number | null;
+  TOI_RATIO: number | null;
+  PARENT_NETPROFIT: number | null;
+  PARENT_NETPROFIT_RATIO: number | null;
+  SALE_EXPENSE: number | null;
+  MANAGE_EXPENSE: number | null;
+  FINANCE_EXPENSE: number | null;
+}
+
+interface RawCashflowRow {
+  REPORT_DATE: string;
+  NETCASH_OPERATE: number | null;
+  SALES_SERVICES: number | null;
+}
+
+const DMSK_REPORT_NAME = (date: string): string => {
+  const year = date.slice(0, 4);
+  return `${year}年报`;
+};
+
+/**
+ * 获取财务风险指标（步骤 7 输入）
+ * 并发拉 DMSK 资产负债 / 利润 / 现金流 三张报表的最新年报（DATE_TYPE_CODE="001"）
+ */
+export async function fetchFinancialRiskMetrics(
+  pureCode: string
+): Promise<FinancialRiskMetrics | null> {
+  const code = pureCode.replace(/[^0-9]/g, "");
+  const filter = `(SECURITY_CODE="${code}")(DATE_TYPE_CODE="001")`;
+  const [bal, inc, cf] = await Promise.all([
+    fetchDatacenter<RawBalanceRow>(
+      "RPT_DMSK_FN_BALANCE",
+      "REPORT_DATE,TOTAL_ASSETS,TOTAL_LIABILITIES,TOTAL_EQUITY,ACCOUNTS_RECE,ACCOUNTS_RECE_RATIO,INVENTORY,INVENTORY_RATIO,MONETARYFUNDS,DEBT_ASSET_RATIO",
+      filter,
+      1, 1, "REPORT_DATE", "-1"
+    ).catch(() => [] as RawBalanceRow[]),
+    fetchDatacenter<RawIncomeRow>(
+      "RPT_DMSK_FN_INCOME",
+      "REPORT_DATE,TOTAL_OPERATE_INCOME,TOI_RATIO,PARENT_NETPROFIT,PARENT_NETPROFIT_RATIO,SALE_EXPENSE,MANAGE_EXPENSE,FINANCE_EXPENSE",
+      filter,
+      1, 1, "REPORT_DATE", "-1"
+    ).catch(() => [] as RawIncomeRow[]),
+    fetchDatacenter<RawCashflowRow>(
+      "RPT_DMSK_FN_CASHFLOW",
+      "REPORT_DATE,NETCASH_OPERATE,SALES_SERVICES",
+      filter,
+      1, 1, "REPORT_DATE", "-1"
+    ).catch(() => [] as RawCashflowRow[]),
+  ]);
+
+  if (bal.length === 0 || inc.length === 0) return null;
+
+  const b = bal[0];
+  const i = inc[0];
+  const c = cf[0] || ({} as RawCashflowRow);
+  const reportDate = b.REPORT_DATE.slice(0, 10);
+
+  // 数据单位：元 → 亿元（保留 2 位）
+  const toBn = (v: number | null) => (v == null ? 0 : Math.round((v / 1e8) * 100) / 100);
+  const round2 = (v: number | null) => (v == null ? null : Math.round(v * 100) / 100);
+
+  const totalRevenue = i.TOTAL_OPERATE_INCOME ?? 0;
+  const netProfit = i.PARENT_NETPROFIT ?? 0;
+  const cfOperate = c.NETCASH_OPERATE ?? 0;
+  const salesSrv = c.SALES_SERVICES ?? 0;
+  const saleExp = i.SALE_EXPENSE ?? 0;
+  const manageExp = i.MANAGE_EXPENSE ?? 0;
+  const financeExp = i.FINANCE_EXPENSE ?? 0;
+
+  const opCashToProfit = netProfit > 0 ? Math.round((cfOperate / netProfit) * 100) / 100 : null;
+  const salesCashToRev = totalRevenue > 0 ? Math.round((salesSrv / totalRevenue) * 100) / 100 : null;
+  const expenseRatio =
+    totalRevenue > 0
+      ? Math.round(((saleExp + manageExp + financeExp) / totalRevenue) * 10000) / 100
+      : null;
+  const saleRatio = totalRevenue > 0 ? Math.round((saleExp / totalRevenue) * 10000) / 100 : null;
+  const manageRatio = totalRevenue > 0 ? Math.round((manageExp / totalRevenue) * 10000) / 100 : null;
+
+  return {
+    reportDate,
+    reportName: DMSK_REPORT_NAME(reportDate),
+    totalAssets: toBn(b.TOTAL_ASSETS),
+    totalLiabilities: toBn(b.TOTAL_LIABILITIES),
+    totalEquity: toBn(b.TOTAL_EQUITY),
+    accountsReceivable: toBn(b.ACCOUNTS_RECE),
+    accountsReceivableYoY: round2(b.ACCOUNTS_RECE_RATIO),
+    inventory: toBn(b.INVENTORY),
+    inventoryYoY: round2(b.INVENTORY_RATIO),
+    monetaryFunds: toBn(b.MONETARYFUNDS),
+    debtAssetRatio: round2(b.DEBT_ASSET_RATIO) ?? 0,
+    totalRevenue: toBn(totalRevenue),
+    totalRevenueYoY: round2(i.TOI_RATIO),
+    parentNetProfit: toBn(netProfit),
+    parentNetProfitYoY: round2(i.PARENT_NETPROFIT_RATIO),
+    saleExpense: toBn(saleExp),
+    manageExpense: toBn(manageExp),
+    financeExpense: toBn(financeExp),
+    netCashOperate: toBn(cfOperate),
+    salesServices: toBn(salesSrv),
+    operatingCashToProfitRatio: opCashToProfit,
+    salesCashToRevenueRatio: salesCashToRev,
+    expenseRatio,
+    saleExpenseRatio: saleRatio,
+    manageExpenseRatio: manageRatio,
+  };
+}
+
+// ---- 主营业务构成（步骤 8） ----
+
+interface RawMainOpRow {
+  REPORT_DATE: string;
+  REPORT_NAME: string;
+  MAINOP_TYPE: string; // "1"=按行业/产品 "2"=按产品细分 "3"=按地区
+  ITEM_NAME: string;
+  MAIN_BUSINESS_INCOME: number | null;
+  MBI_RATIO: number | null;     // 占总营收比 (0~1)
+  GROSS_RPOFIT_RATIO: number | null;
+}
+
+/**
+ * 获取主营业务构成（步骤 8 输入）
+ * 取最新年报，按 MAINOP_TYPE 分组返回
+ */
+export async function fetchMainBusinessComposition(
+  pureCode: string
+): Promise<MainBusinessComposition | null> {
+  const code = pureCode.replace(/[^0-9]/g, "");
+  // 先找出最新年报的 REPORT_DATE
+  const dateProbe = await fetchDatacenter<{ REPORT_DATE: string; REPORT_NAME: string }>(
+    "RPT_F10_FN_MAINOP",
+    "REPORT_DATE,REPORT_NAME",
+    `(SECURITY_CODE="${code}")`,
+    50,
+    1,
+    "REPORT_DATE",
+    "-1"
+  );
+  if (dateProbe.length === 0) return null;
+
+  // 找出第一个含"年报"的报告期
+  const latestAnnual = dateProbe.find((r) => r.REPORT_NAME && r.REPORT_NAME.includes("年报"));
+  if (!latestAnnual) return null;
+  const targetDate = latestAnnual.REPORT_DATE.slice(0, 10);
+  const reportName = latestAnnual.REPORT_NAME;
+
+  // 拉这个报告期所有 MAINOP_TYPE 的数据
+  const rows = await fetchDatacenter<RawMainOpRow>(
+    "RPT_F10_FN_MAINOP",
+    "REPORT_DATE,REPORT_NAME,MAINOP_TYPE,ITEM_NAME,MAIN_BUSINESS_INCOME,MBI_RATIO,GROSS_RPOFIT_RATIO",
+    `(SECURITY_CODE="${code}")(REPORT_DATE='${targetDate} 00:00:00')`,
+    50,
+    1
+  );
+  if (rows.length === 0) return null;
+
+  const toSeg = (r: RawMainOpRow): MainBusinessSegment => ({
+    name: r.ITEM_NAME || "未知",
+    income: r.MAIN_BUSINESS_INCOME != null ? Math.round((r.MAIN_BUSINESS_INCOME / 1e8) * 100) / 100 : 0,
+    ratio: r.MBI_RATIO != null ? Math.round(r.MBI_RATIO * 10000) / 10000 : 0,
+    grossMargin:
+      r.GROSS_RPOFIT_RATIO != null ? Math.round(r.GROSS_RPOFIT_RATIO * 10000) / 10000 : 0,
+  });
+
+  const byProduct = rows
+    .filter((r) => r.MAINOP_TYPE === "1")
+    .map(toSeg)
+    .sort((a, b) => b.ratio - a.ratio);
+  const byRegion = rows
+    .filter((r) => r.MAINOP_TYPE === "3")
+    .map(toSeg)
+    .sort((a, b) => b.ratio - a.ratio);
+
+  const productCR1 = byProduct[0]?.ratio ?? 0;
+  const productCR3 = byProduct.slice(0, 3).reduce((s, x) => s + x.ratio, 0);
+  const regionCR1 = byRegion[0]?.ratio ?? 0;
+
+  return {
+    reportDate: targetDate,
+    reportName,
+    byProduct,
+    byRegion,
+    productCR1: Math.round(productCR1 * 10000) / 10000,
+    productCR3: Math.round(productCR3 * 10000) / 10000,
+    regionCR1: Math.round(regionCR1 * 10000) / 10000,
+  };
 }

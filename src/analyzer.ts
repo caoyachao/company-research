@@ -6,7 +6,7 @@ import {
 } from "./prompts/index.js";
 import { type DataContext } from "./data/types.js";
 import { type StepResult } from "./report.js";
-import { fetchStockData, resolveStockCode } from "./data/eastmoney.js";
+import { fetchStockData, resolveStockCode, fetchFinancialRiskMetrics, fetchMainBusinessComposition } from "./data/eastmoney.js";
 import {
   fetchHistoricalValuation,
   fetchFinancialData,
@@ -117,7 +117,7 @@ function truncateDetail(detail: string, maxLen = 2000): string {
 
 export async function analyzeStock(
   options: AnalyzerOptions
-): Promise<StepResult[]> {
+): Promise<{ results: StepResult[]; companyName: string }> {
   const { stockCode, useContext = true, timeout, onProgress, onEvent } = options;
 
   function emitEvent(event: Omit<AnalysisEvent, "timestamp">) {
@@ -144,13 +144,15 @@ export async function analyzeStock(
     }
 
     const dataFetchStart = Date.now();
-    const [{ realtime, kline }, historicalPE, financials, peerComparison, insiderTrading] =
+    const [{ realtime, kline }, historicalPE, financials, peerComparison, insiderTrading, financialRisk, mainBusiness] =
       await Promise.all([
         fetchStockData(resolvedCode),
         fetchHistoricalValuation(resolvedCode),
         fetchFinancialData(resolvedCode),
         fetchPeerComparison(resolvedCode),
         fetchInsiderTrading(resolvedCode),
+        fetchFinancialRiskMetrics(resolvedCode).catch(() => null),
+        fetchMainBusinessComposition(resolvedCode).catch(() => null),
       ]);
 
     const technical = calculateTechnicalIndicators(realtime, kline);
@@ -210,6 +212,23 @@ export async function analyzeStock(
       detail: `${realtime.name} 当前价: ¥${realtime.price.toFixed(2)}, PE: ${realtime.pe.toFixed(2)}, PB: ${realtime.pb.toFixed(2)}`,
     });
 
+    if (financialRisk) {
+      console.log(`  ✓ 财务风险指标获取完成 (${financialRisk.reportName})`);
+      emitEvent({
+        type: "data_fetched",
+        message: "财务风险指标获取完成",
+        detail: `${financialRisk.reportName}：资产负债率 ${financialRisk.debtAssetRatio}%, 经营现金流/净利润 ${financialRisk.operatingCashToProfitRatio ?? "—"}`,
+      });
+    }
+    if (mainBusiness) {
+      console.log(`  ✓ 主营业务构成获取完成 (${mainBusiness.reportName})`);
+      emitEvent({
+        type: "data_fetched",
+        message: "主营业务构成获取完成",
+        detail: `${mainBusiness.reportName}：${mainBusiness.byProduct.length} 个产品类目, ${mainBusiness.byRegion.length} 个区域`,
+      });
+    }
+
     const dataContext: DataContext = {
       stockCode,
       realtime,
@@ -219,7 +238,10 @@ export async function analyzeStock(
       financials,
       peerComparison,
       insiderTrading,
+      financialRisk,
+      mainBusiness,
       summaries: [],
+      stepSummaries: {},
     };
 
     console.log(`  ✓ 技术指标计算完成`);
@@ -240,6 +262,7 @@ export async function analyzeStock(
 
     const results: StepResult[] = [];
     const summaries: string[] = [];
+    const stepSummaryMap: Record<number, string> = {};
 
     for (const step of ANALYSIS_STEPS) {
       const stepStart = Date.now();
@@ -340,6 +363,7 @@ export async function analyzeStock(
         if (useContext && step.id < 13) {
           summary = `${step.title}：已基于实时数据程序化计算`;
           summaries.push(`【${step.title}】${summary}`);
+          stepSummaryMap[step.id] = summary;
         }
 
         const duration = Date.now() - stepStart;
@@ -376,6 +400,7 @@ export async function analyzeStock(
       const ctx: DataContext = {
         ...dataContext,
         summaries: useContext ? [...summaries] : undefined,
+        stepSummaries: useContext ? { ...stepSummaryMap } : undefined,
       };
 
       const prompt = step.promptFn(ctx);
@@ -437,6 +462,7 @@ export async function analyzeStock(
               detail: truncateDetail(summary),
             });
             summaries.push(`【${step.title}】${summary}`);
+            stepSummaryMap[step.id] = summary;
             console.log(`  ✓ 摘要已提取`);
           } catch (e) {
             const errMsg = e instanceof Error ? e.message : String(e);
@@ -450,6 +476,7 @@ export async function analyzeStock(
             });
             summary = content.slice(0, 100) + "...";
             summaries.push(`【${step.title}】${summary}`);
+            stepSummaryMap[step.id] = summary;
           }
         }
 
@@ -503,7 +530,7 @@ export async function analyzeStock(
       detail: `共 ${results.length} 个步骤`,
     });
 
-    return results;
+    return { results, companyName: realtime.name };
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     emitEvent({

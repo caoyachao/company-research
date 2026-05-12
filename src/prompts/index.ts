@@ -1,6 +1,17 @@
 import type { DataContext } from "../data/types.js";
 
-function buildContextBlock(ctx: DataContext): string {
+function buildContextBlock(ctx: DataContext, stepIds?: number[]): string {
+  if (stepIds && ctx.stepSummaries) {
+    const filtered = stepIds
+      .map((id) => ctx.stepSummaries![id])
+      .filter((s): s is string => !!s);
+    if (filtered.length === 0) return "";
+    return (
+      "\n\n【前文相关摘要】\n" +
+      filtered.map((s, i) => `${i + 1}. ${s}`).join("\n") +
+      "\n"
+    );
+  }
   if (!ctx.summaries || ctx.summaries.length === 0) return "";
   return (
     "\n\n【前文分析摘要】\n" +
@@ -108,25 +119,108 @@ ${dataBlock}
 // ========== 第三步：风险排查 ==========
 
 export function prompt7_FinancialRisks(ctx: DataContext): string {
-  return `请分析股票 ${ctx.stockCode}（${ctx.realtime.name}）的财务风险。${buildContextBlock(ctx)}
+  if (!ctx.financialRisk) {
+    return `请分析股票 ${ctx.stockCode}（${ctx.realtime.name}）的财务风险。${buildContextBlock(ctx, [3])}
 
 【当前估值数据】
 - 当前股价：¥${ctx.realtime.price.toFixed(2)}
 - 市盈率：${ctx.valuation.pe.toFixed(2)}
 - 市净率：${ctx.valuation.pb.toFixed(2)}
-- 总市值：${(ctx.valuation.marketCap ).toFixed(2)}亿元
+- 总市值：${ctx.valuation.marketCap.toFixed(2)}亿元
 
 请列出这只股票在财务报表中最容易被粉饰的三个科目，并解释为什么这些科目容易出问题。`;
+  }
+
+  const r = ctx.financialRisk;
+  const fmtYoY = (n: number | null) =>
+    n === null ? "—" : `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
+  const fmtPct = (n: number | null) =>
+    n === null ? "—" : `${n.toFixed(2)}%`;
+  const fmtRatio = (n: number | null) => (n === null ? "—" : n.toFixed(2));
+  const fmtAmt = (n: number) => n.toFixed(2);
+
+  return `请基于以下真实财务数据，对股票 ${ctx.stockCode}（${ctx.realtime.name}）${r.reportName}的财务报表进行风险排查。${buildContextBlock(ctx, [3])}
+
+【真实财务风险指标（来源：东方财富 ${r.reportName}）】
+
+资产负债类：
+- 应收账款：${fmtAmt(r.accountsReceivable)}亿元（同比 ${fmtYoY(r.accountsReceivableYoY)}）
+- 存货：${fmtAmt(r.inventory)}亿元（同比 ${fmtYoY(r.inventoryYoY)}）
+- 货币资金：${fmtAmt(r.monetaryFunds)}亿元
+- 资产负债率：${fmtPct(r.debtAssetRatio)}
+
+利润与现金流质量：
+- 营业总收入：${fmtAmt(r.totalRevenue)}亿元（同比 ${fmtYoY(r.totalRevenueYoY)}）
+- 归母净利润：${fmtAmt(r.parentNetProfit)}亿元（同比 ${fmtYoY(r.parentNetProfitYoY)}）
+- 经营性现金流：${fmtAmt(r.netCashOperate)}亿元
+- 销售商品收到现金：${fmtAmt(r.salesServices)}亿元
+- 经营现金流/净利润：${fmtRatio(r.operatingCashToProfitRatio)}（健康阈值 > 1.0）
+- 销售收现/营收：${fmtRatio(r.salesCashToRevenueRatio)}（高质量 > 1.0）
+
+费用率：
+- 销售费用率：${fmtPct(r.saleExpenseRatio)}
+- 管理费用率：${fmtPct(r.manageExpenseRatio)}
+- 三费合计/营收：${fmtPct(r.expenseRatio)}
+
+请基于上面的真实数据，**逐项判断以下风险信号**（每项给出"正常 / 关注 / 风险"结论及依据）：
+1. 应收账款同比增速是否显著超过营收同比增速？（若是，可能存在以放宽信用换营收的粉饰行为）
+2. 存货同比增速是否远超营收同比增速？（若是，提示去库存压力或销售放缓）
+3. 经营现金流/净利润是否 < 1.0？（若是，提示利润含金量不足）
+4. 销售收现/营收是否 < 1.0？（若是，提示回款质量差）
+5. 三费率合计是否偏高？
+
+最后列出 3 个最值得警惕的科目，并基于具体数字解释为何这些科目最值得关注。`;
 }
 
 export function prompt8_CustomerSupplierRisk(ctx: DataContext): string {
-  return `请分析股票 ${ctx.stockCode}（${ctx.realtime.name}）。${buildContextBlock(ctx)}
+  if (!ctx.mainBusiness) {
+    return `请分析股票 ${ctx.stockCode}（${ctx.realtime.name}）。${buildContextBlock(ctx, [1])}
 
 【当前估值数据】
 - 当前股价：¥${ctx.realtime.price.toFixed(2)}
-- 总市值：${(ctx.valuation.marketCap ).toFixed(2)}亿元
+- 总市值：${ctx.valuation.marketCap.toFixed(2)}亿元
 
 请分析这家公司是否存在单一客户依赖或单一供应商依赖，如果有的话分别占比是多少。`;
+  }
+
+  const m = ctx.mainBusiness;
+  const productRows = m.byProduct
+    .slice(0, 5)
+    .map(
+      (s, i) =>
+        `| ${i + 1} | ${s.name} | ${(s.ratio * 100).toFixed(2)}% | ${(s.grossMargin * 100).toFixed(2)}% |`
+    )
+    .join("\n");
+  const regionRows = m.byRegion
+    .slice(0, 5)
+    .map(
+      (s, i) => `| ${i + 1} | ${s.name} | ${(s.ratio * 100).toFixed(2)}% |`
+    )
+    .join("\n");
+
+  return `请基于以下真实主营业务构成数据，分析股票 ${ctx.stockCode}（${ctx.realtime.name}）的业务依赖风险。${buildContextBlock(ctx, [1])}
+
+【真实主营业务构成（来源：东方财富 ${m.reportName}）】
+
+按产品/行业拆分（前 5 大）：
+| 排名 | 产品/类目 | 营收占比 | 毛利率 |
+|------|---------|---------|--------|
+${productRows || "| — | （无产品维度披露） | — | — |"}
+
+- 最大产品占比（CR1）：${(m.productCR1 * 100).toFixed(2)}%
+- 前三大产品合计占比（CR3）：${(m.productCR3 * 100).toFixed(2)}%
+
+按地区拆分（前 5 大）：
+| 排名 | 地区 | 营收占比 |
+|------|------|---------|
+${regionRows || "| — | （无地区维度披露） | — |"}
+
+- 最大地区占比（CR1）：${(m.regionCR1 * 100).toFixed(2)}%
+
+请基于上面的真实数据进行分析：
+1. **产品依赖判断**：按 CR1 > 50% 高度集中、30%–50% 较为集中、< 30% 分散，判断本公司的产品依赖程度；并结合各产品毛利率，指出哪类产品是真正的利润支柱
+2. **地区依赖判断**：按 regionCR1 > 70% 高度集中、40%–70% 较为集中、< 40% 分散，判断本公司的地区依赖程度
+3. **数据局限说明**：公开 API 无法提供"前五大客户/供应商"具体名单和占比；请明确告知用户，要获取客户/供应商粒度的依赖数据，需查阅 ${m.reportName} 附注中的"前五名客户销售额合计"和"前五名供应商采购额合计"披露段落。`;
 }
 
 export function prompt9_InsiderTrading(ctx: DataContext): string {

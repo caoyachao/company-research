@@ -127,6 +127,57 @@ export interface InsiderTrading {
   majorHolders: MajorHolder[];
 }
 
+// 财务风险指标（步骤 7 输入）
+export interface FinancialRiskMetrics {
+  reportDate: string;           // YYYY-MM-DD
+  reportName: string;           // 如"2025年报"
+  // 资产负债（亿元）
+  totalAssets: number;
+  totalLiabilities: number;
+  totalEquity: number;
+  accountsReceivable: number;
+  accountsReceivableYoY: number | null;  // 同比变化（%）
+  inventory: number;
+  inventoryYoY: number | null;
+  monetaryFunds: number;
+  debtAssetRatio: number;        // 资产负债率（%）
+  // 利润（亿元）
+  totalRevenue: number;
+  totalRevenueYoY: number | null;
+  parentNetProfit: number;
+  parentNetProfitYoY: number | null;
+  saleExpense: number;
+  manageExpense: number;
+  financeExpense: number;
+  // 现金流（亿元）
+  netCashOperate: number;
+  salesServices: number;
+  // 计算指标
+  operatingCashToProfitRatio: number | null;  // 经营现金流/净利润（健康 > 1.0）
+  salesCashToRevenueRatio: number | null;     // 销现/营收（高质量 > 1.0）
+  expenseRatio: number | null;                // (销售+管理+财务)/营收（%）
+  saleExpenseRatio: number | null;            // 销售费用率（%）
+  manageExpenseRatio: number | null;          // 管理费用率（%）
+}
+
+// 主营业务构成（步骤 8 输入，作为客户/供应商依赖的代理指标）
+export interface MainBusinessSegment {
+  name: string;        // 类目名称
+  income: number;      // 营业收入（亿元）
+  ratio: number;       // 占总营收比（0~1）
+  grossMargin: number; // 毛利率（0~1）
+}
+
+export interface MainBusinessComposition {
+  reportDate: string;
+  reportName: string;
+  byProduct: MainBusinessSegment[];  // 按产品/行业
+  byRegion: MainBusinessSegment[];   // 按地区
+  productCR1: number;   // 最大产品占比
+  productCR3: number;   // 前三大产品合计占比
+  regionCR1: number;    // 最大地区占比
+}
+
 // 完整的分析数据上下文
 export interface DataContext {
   stockCode: string;
@@ -137,5 +188,8 @@ export interface DataContext {
   financials?: FinancialData[];
   peerComparison?: PeerComparison | null;
   insiderTrading?: InsiderTrading | null;
+  financialRisk?: FinancialRiskMetrics | null;
+  mainBusiness?: MainBusinessComposition | null;
   summaries?: string[];
+  stepSummaries?: Record<number, string>;  // 按步骤 ID 索引的摘要（用于上下文裁剪）
 }

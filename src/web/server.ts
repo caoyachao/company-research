@@ -143,7 +143,7 @@ async function runAnalysis(
     stockCode,
   });
 
-  const results = await analyzeStock({
+  const { results, companyName } = await analyzeStock({
     stockCode,
     useContext: true,
     onEvent: (event) => {
@@ -152,9 +152,9 @@ async function runAnalysis(
   });
 
   // Generate reports
-  const mdReport = generateReport(stockCode, results);
+  const mdReport = generateReport(stockCode, results, companyName);
   const mdPath = saveReport(stockCode, mdReport);
-  const htmlReport = generateHTMLReport(stockCode, results);
+  const htmlReport = generateHTMLReport(stockCode, results, companyName);
   const htmlPath = saveHTMLReport(stockCode, htmlReport);
 
   // Send completion with report paths

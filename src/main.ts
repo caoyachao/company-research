@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   console.log(`✓ LLM Gateway 连接正常 (${health.status})\n`);
 
   try {
-    const results = await analyzeStock({
+    const { results, companyName } = await analyzeStock({
       stockCode,
       useContext,
       timeout,
@@ -70,12 +70,12 @@ async function main(): Promise<void> {
     console.log(`\n所有步骤分析完成，正在生成报告...`);
 
     // Generate Markdown report
-    const report = generateReport(stockCode, results);
+    const report = generateReport(stockCode, results, companyName);
     const mdPath = saveReport(stockCode, report);
     console.log(`✅ Markdown 报告: ${mdPath}`);
 
     // Generate HTML report and open in browser
-    const html = generateHTMLReport(stockCode, results);
+    const html = generateHTMLReport(stockCode, results, companyName);
     const htmlPath = saveHTMLReport(stockCode, html);
     console.log(`✅ HTML 报告: ${htmlPath}`);
 
