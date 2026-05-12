@@ -321,7 +321,9 @@ export function generateFinancialAnalysis(financials: FinancialData[]): string {
   const rows = sorted.map((f) => {
     const revGrowthStr = f.revenueGrowth > 0 ? `+${f.revenueGrowth.toFixed(2)}%` : `${f.revenueGrowth.toFixed(2)}%`;
     const profitGrowthStr = f.profitGrowth > 0 ? `+${f.profitGrowth.toFixed(2)}%` : `${f.profitGrowth.toFixed(2)}%`;
-    return `| ${f.year} | ${f.revenue.toFixed(2)} | ${revGrowthStr} | ${f.netProfit.toFixed(2)} | ${profitGrowthStr} | ${f.roe.toFixed(2)}% | ${f.grossMargin.toFixed(2)}% |`;
+    const roeStr = f.roe != null ? `${f.roe.toFixed(2)}%` : "—";
+    const marginStr = f.grossMargin != null ? `${f.grossMargin.toFixed(2)}%` : "—";
+    return `| ${f.year} | ${f.revenue.toFixed(2)} | ${revGrowthStr} | ${f.netProfit.toFixed(2)} | ${profitGrowthStr} | ${roeStr} | ${marginStr} |`;
   }).join("\n");
 
   const trend =
@@ -353,8 +355,8 @@ ${
         : `公司营收出现下滑（${latest.revenueGrowth.toFixed(2)}%），需警惕经营风险。`
 }
 
-${latest.roe > 15 ? `ROE 达到 ${latest.roe.toFixed(2)}%，盈利能力优秀。` : latest.roe > 10 ? `ROE 为 ${latest.roe.toFixed(2)}%，盈利能力尚可。` : `ROE 仅 ${latest.roe.toFixed(2)}%，盈利能力偏弱。`}
-${latest.grossMargin > 50 ? `毛利率高达 ${latest.grossMargin.toFixed(2)}%，议价能力强。` : latest.grossMargin > 30 ? `毛利率为 ${latest.grossMargin.toFixed(2)}%，处于行业中等水平。` : `毛利率仅 ${latest.grossMargin.toFixed(2)}%，竞争激烈。`}
+${latest.roe != null ? (latest.roe > 15 ? `ROE 达到 ${latest.roe.toFixed(2)}%，盈利能力优秀。` : latest.roe > 10 ? `ROE 为 ${latest.roe.toFixed(2)}%，盈利能力尚可。` : `ROE 仅 ${latest.roe.toFixed(2)}%，盈利能力偏弱。`) : ""}
+${latest.grossMargin != null ? (latest.grossMargin > 50 ? `毛利率高达 ${latest.grossMargin.toFixed(2)}%，议价能力强。` : latest.grossMargin > 30 ? `毛利率为 ${latest.grossMargin.toFixed(2)}%，处于行业中等水平。` : `毛利率仅 ${latest.grossMargin.toFixed(2)}%，竞争激烈。`) : ""}
 
 > 数据来源：东方财富业绩报表（akshare）
 `;

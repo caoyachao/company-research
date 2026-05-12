@@ -6,7 +6,7 @@ import {
 } from "./prompts/index.js";
 import { type DataContext } from "./data/types.js";
 import { type StepResult } from "./report.js";
-import { fetchStockData } from "./data/eastmoney.js";
+import { fetchStockData, resolveStockCode } from "./data/eastmoney.js";
 import {
   fetchHistoricalValuation,
   fetchFinancialData,
@@ -133,14 +133,24 @@ export async function analyzeStock(
     console.log("【阶段一】获取实时数据...");
     emitEvent({ type: "phase_start", message: "阶段一：获取实时数据" });
 
+    // 先标准化股票代码，确保所有 fetch 函数使用同一份纯代码（避免中文名导致 pureCode 为空）
+    const resolvedCode = await resolveStockCode(stockCode);
+    if (resolvedCode !== stockCode) {
+      console.log(`  → 名称解析: ${stockCode} → ${resolvedCode}`);
+      emitEvent({
+        type: "debug_log",
+        message: `名称解析: ${stockCode} → ${resolvedCode}`,
+      });
+    }
+
     const dataFetchStart = Date.now();
     const [{ realtime, kline }, historicalPE, financials, peerComparison, insiderTrading] =
       await Promise.all([
-        fetchStockData(stockCode),
-        fetchHistoricalValuation(stockCode),
-        fetchFinancialData(stockCode),
-        fetchPeerComparison(stockCode),
-        fetchInsiderTrading(stockCode),
+        fetchStockData(resolvedCode),
+        fetchHistoricalValuation(resolvedCode),
+        fetchFinancialData(resolvedCode),
+        fetchPeerComparison(resolvedCode),
+        fetchInsiderTrading(resolvedCode),
       ]);
 
     const technical = calculateTechnicalIndicators(realtime, kline);
@@ -267,13 +277,33 @@ export async function analyzeStock(
         (step.id === 10) ||
         (step.id === 11);
 
+      // 判断 fallback 原因
+      let fallbackReason = "";
+      if (step.id === 3 && financials.length === 0) {
+        fallbackReason = "财务数据获取失败，fallback 到 LLM";
+      } else if (step.id === 4 && !peStats) {
+        fallbackReason = `历史PE数据${historicalPE.length === 0 ? "获取失败" : "计算失败"}，fallback 到 LLM`;
+      } else if (step.id === 5 && !peerComparison) {
+        fallbackReason = "同行对比数据获取失败，fallback 到 LLM";
+      } else if (step.id === 9 && !insiderTrading) {
+        fallbackReason = "增减持数据获取失败，fallback 到 LLM";
+      }
+
       if (step.skipLLM || hasDataForStep) {
-        console.log(`  → 纯程序化计算...`);
+        const progReason =
+          step.id === 3 ? `财务数据就绪 (${financials.length}期)` :
+          step.id === 4 ? `历史PE数据就绪 (${historicalPE.length}个交易日)` :
+          step.id === 5 ? "同行对比数据就绪" :
+          step.id === 6 ? "纯程序化步骤" :
+          step.id === 9 ? "增减持数据就绪" :
+          step.id === 10 ? "纯程序化步骤" :
+          step.id === 11 ? "纯程序化步骤" : "程序化";
+        console.log(`  → ${progReason}，走程序化路径`);
         emitEvent({
           type: "debug_log",
           stepId: step.id,
           stepTitle: step.title,
-          message: "纯程序化计算...",
+          message: `${progReason}，走程序化路径`,
         });
 
         if (step.id === 3 && financials.length > 0) {
@@ -333,6 +363,16 @@ export async function analyzeStock(
       }
 
       // LLM 增强步骤：传入真实数据
+      if (fallbackReason) {
+        console.log(`  → ${fallbackReason}`);
+        emitEvent({
+          type: "debug_log",
+          stepId: step.id,
+          stepTitle: step.title,
+          message: fallbackReason,
+        });
+      }
+
       const ctx: DataContext = {
         ...dataContext,
         summaries: useContext ? [...summaries] : undefined,
@@ -355,21 +395,23 @@ export async function analyzeStock(
           message: "调用 LLM...",
         });
         const llmStart = Date.now();
-        content = await callLLM(prompt, { timeout });
+        const llmResult = await callLLM(prompt, { timeout });
+        content = llmResult.content;
         const llmDuration = Date.now() - llmStart;
-        console.log(`  ✓ LLM 分析完成`);
+        console.log(`  ✓ LLM 分析完成 (模型: ${llmResult.model})`);
         emitEvent({
           type: "llm_call_end",
           stepId: step.id,
           stepTitle: step.title,
           message: "LLM 响应完成",
           durationMs: llmDuration,
+          detail: `模型: ${llmResult.model}`,
         });
         emitEvent({
           type: "debug_log",
           stepId: step.id,
           stepTitle: step.title,
-          message: "LLM 响应内容",
+          message: `LLM 响应内容 (模型: ${llmResult.model})`,
           detail: truncateDetail(content),
         });
 
@@ -385,12 +427,13 @@ export async function analyzeStock(
           const summaryPrompt = promptExtractSummary(step.title, content);
           try {
             const summaryStart = Date.now();
-            summary = await callLLM(summaryPrompt, { timeout });
+            const summaryResult = await callLLM(summaryPrompt, { timeout });
+            summary = summaryResult.content;
             emitEvent({
               type: "debug_log",
               stepId: step.id,
               stepTitle: step.title,
-              message: "摘要提取完成",
+              message: `摘要提取完成 (模型: ${summaryResult.model})`,
               detail: truncateDetail(summary),
             });
             summaries.push(`【${step.title}】${summary}`);

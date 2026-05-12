@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>股票全面分析</title>
+  <title>上市公司调研</title>
   <style>
     :root {
       --primary: #2563eb;
@@ -282,7 +282,7 @@
 </head>
 <body>
   <div class="container">
-    <h1>股票全面分析</h1>
+    <h1>上市公司调研</h1>
     <p class="subtitle">输入股票代码，启动 13 步 AI 深度分析</p>
 
     <div class="error-banner" id="errorBanner"></div>
@@ -292,7 +292,7 @@
         <input
           type="text"
           id="stockInput"
-          placeholder="例如: 600519.SH 或 000001"
+          placeholder="输入股票代码（如 600519.SH）或中文名称（如 贵州茅台）"
           autocomplete="off"
         />
         <button id="analyzeBtn" onclick="startAnalysis()">开始分析</button>
@@ -320,6 +320,125 @@
     let isCompleted = false;
     const TOTAL_STEPS = 13;
     const stepElements = {}; // stepId -> { header, panel, logsEl, toggle, hasLogs }
+
+    // ===== Session Persistence =====
+    const SESSION_KEY = 'analysisState';
+
+    function saveState() {
+      const state = {
+        stockCode: document.getElementById('stockInput').value.trim(),
+        phase: document.getElementById('phaseLabel').textContent,
+        status: isCompleted ? 'completed' : document.getElementById('errorBanner').classList.contains('active') ? 'error' : 'running',
+        steps: {},
+        reportLinks: null,
+        errorMsg: document.getElementById('errorBanner').classList.contains('active') ? document.getElementById('errorBanner').textContent : null,
+      };
+      for (let i = 1; i <= TOTAL_STEPS; i++) {
+        const s = stepElements[i];
+        if (s) {
+          const logs = [];
+          if (s.hasLogs && s.logsEl) {
+            s.logsEl.querySelectorAll('.debug-log').forEach((logEl) => {
+              const msgEl = logEl.querySelector('.log-msg');
+              if (msgEl) {
+                logs.push(msgEl.textContent);
+              }
+            });
+          }
+          state.steps[i] = {
+            title: s.title.textContent,
+            status: s.status.textContent,
+            state: s.el.className.replace('step ', ''),
+            badges: s.badges.innerHTML,
+            hasLogs: s.hasLogs,
+            logs: logs.slice(-5),
+          };
+        }
+      }
+      const reportCard = document.getElementById('resultCard');
+      if (reportCard && reportCard.classList.contains('active')) {
+        state.reportLinks = {
+          htmlPath: document.getElementById('reportLink').href,
+          mdPath: document.getElementById('mdReportLink').href,
+        };
+        state.status = 'completed';
+      }
+      try {
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify(state));
+      } catch {}
+    }
+
+    function restoreState() {
+      try {
+        const raw = sessionStorage.getItem(SESSION_KEY);
+        if (!raw) return false;
+        const state = JSON.parse(raw);
+        if (!state.stockCode) return false;
+
+        document.getElementById('stockInput').value = state.stockCode;
+
+        if (state.status === 'completed' && state.reportLinks) {
+          document.getElementById('progressSection').classList.add('active');
+          restoreSteps(state.steps);
+          document.getElementById('reportLink').href = state.reportLinks.htmlPath;
+          document.getElementById('mdReportLink').href = state.reportLinks.mdPath;
+          document.getElementById('resultCard').classList.add('active');
+          setPhase(state.phase || '分析完成');
+          isCompleted = true;
+          return true;
+        }
+
+        if (state.status === 'error' && state.errorMsg) {
+          document.getElementById('progressSection').classList.add('active');
+          restoreSteps(state.steps);
+          showError(state.errorMsg);
+          setPhase(state.phase || '分析出错');
+          return true;
+        }
+
+        if (state.status === 'running' && Object.keys(state.steps || {}).length > 0) {
+          document.getElementById('progressSection').classList.add('active');
+          restoreSteps(state.steps);
+          setPhase(state.phase || '分析中...');
+          return true;
+        }
+
+        return false;
+      } catch {
+        return false;
+      }
+    }
+
+    function restoreSteps(steps) {
+      initSteps();
+      for (let i = 1; i <= TOTAL_STEPS; i++) {
+        const saved = steps[i];
+        if (saved) {
+          updateStep(i, {
+            title: saved.title,
+            status: saved.status,
+            state: saved.state,
+            badges: saved.badges,
+          });
+          if (saved.hasLogs) {
+            stepElements[i].hasLogs = true;
+            stepElements[i].toggle.classList.add('visible');
+            if (saved.logs && saved.logs.length > 0) {
+              saved.logs.forEach((msg) => {
+                const logEl = document.createElement('div');
+                logEl.className = 'debug-log';
+                logEl.innerHTML = `<span class="log-time">--:--:--.---</span><span class="log-level info">INFO</span><span class="log-msg">${escapeHtml(msg)}</span>`;
+                stepElements[i].logsEl.appendChild(logEl);
+              });
+            }
+          }
+        }
+      }
+    }
+
+    function clearState() {
+      try { sessionStorage.removeItem(SESSION_KEY); } catch {}
+    }
 
     // ===== Init =====
     function initSteps() {
@@ -471,7 +590,7 @@
         return;
       }
 
-      // Reset UI
+      clearState();
       resetUI();
 
       // Close previous connection if any
@@ -483,21 +602,25 @@
       eventSource.addEventListener('connected', (e) => {
         const data = JSON.parse(e.data);
         console.log('Connected:', data);
+        saveState();
       });
 
       eventSource.addEventListener('phase_start', (e) => {
         const data = JSON.parse(e.data);
         setPhase(data.message || data.phase || '分析中...');
+        saveState();
       });
 
       eventSource.addEventListener('phase_end', (e) => {
         const data = JSON.parse(e.data);
         console.log('Phase end:', data.message);
+        saveState();
       });
 
       eventSource.addEventListener('data_fetched', (e) => {
         const data = JSON.parse(e.data);
         console.log('Data fetched:', data.message, data.detail);
+        saveState();
       });
 
       eventSource.addEventListener('step_start', (e) => {
@@ -511,6 +634,7 @@
           state: 'running',
           badges,
         });
+        saveState();
       });
 
       eventSource.addEventListener('debug_log', (e) => {
@@ -518,6 +642,7 @@
         if (data.stepId) {
           addDebugLog(data.stepId, data.level || 'debug', data.message, data.detail);
         }
+        saveState();
       });
 
       eventSource.addEventListener('llm_call_start', (e) => {
@@ -526,13 +651,16 @@
           updateStep(data.stepId, { status: '调用 LLM...' });
           addDebugLog(data.stepId, 'info', '调用 LLM...', null);
         }
+        saveState();
       });
 
       eventSource.addEventListener('llm_call_end', (e) => {
         const data = JSON.parse(e.data);
         if (data.stepId) {
-          addDebugLog(data.stepId, 'info', `LLM 响应完成`, `耗时 ${data.durationMs}ms`);
+          const modelInfo = data.detail || '';
+          addDebugLog(data.stepId, 'info', `LLM 响应完成${modelInfo ? ' (' + modelInfo + ')' : ''}`, `耗时 ${data.durationMs}ms`);
         }
+        saveState();
       });
 
       eventSource.addEventListener('summary_extract', (e) => {
@@ -540,6 +668,7 @@
         if (data.stepId) {
           updateStep(data.stepId, { status: '提取摘要...' });
         }
+        saveState();
       });
 
       eventSource.addEventListener('step_complete', (e) => {
@@ -549,6 +678,7 @@
           status: `完成${durationText}`,
           state: 'complete',
         });
+        saveState();
       });
 
       eventSource.addEventListener('step_error', (e) => {
@@ -558,6 +688,7 @@
           state: 'error',
         });
         addDebugLog(data.stepId, 'error', '步骤执行失败', data.error);
+        saveState();
       });
 
       eventSource.addEventListener('report_ready', (e) => {
@@ -566,30 +697,42 @@
         document.getElementById('mdReportLink').href = 'file://' + data.markdownPath;
         document.getElementById('resultCard').classList.add('active');
         isCompleted = true;
+        saveState();
       });
 
+      let hasReceivedError = false;
+
       eventSource.addEventListener('error', (e) => {
+        hasReceivedError = true;
         let msg = '分析过程中发生错误';
         try {
           const data = JSON.parse(e.data);
           msg = data.error || msg;
         } catch {}
         showError(msg);
+        saveState();
         cleanup();
       });
 
       eventSource.addEventListener('done', () => {
         isCompleted = true;
+        saveState();
         cleanup();
       });
 
       eventSource.onerror = () => {
-        // Only show error if we haven't already completed successfully
-        if (!isCompleted) {
+        // Only show error if we haven't already completed or received an error event
+        if (!isCompleted && !hasReceivedError) {
           showError('连接中断，请重试');
+          saveState();
         }
         cleanup();
       };
+    }
+
+    // Restore state on page load
+    if (!restoreState()) {
+      initSteps();
     }
 
     // Allow Enter key

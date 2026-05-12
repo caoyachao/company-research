@@ -109,19 +109,21 @@ function handleAnalyze(req: IncomingMessage, res: ServerResponse): void {
   runAnalysis(stockCode, sendEvent)
     .then(() => {
       if (!res.destroyed && !isFinished) {
-        isFinished = true;
         clearInterval(heartbeat);
         sendEvent("done", {});
-        res.end();
+        isFinished = true;
+        // 短暂延迟确保 done 事件被客户端接收后再关闭连接，防止 EventSource 自动重连
+        setTimeout(() => res.end(), 300);
       }
     })
     .catch((error) => {
       if (!res.destroyed && !isFinished) {
-        isFinished = true;
         clearInterval(heartbeat);
         const errMsg = error instanceof Error ? error.message : String(error);
         sendEvent("error", { error: errMsg });
-        res.end();
+        isFinished = true;
+        // 短暂延迟确保 error 事件被客户端接收后再关闭连接
+        setTimeout(() => res.end(), 300);
       }
     });
 }
@@ -179,7 +181,7 @@ const server = createServer((req, res) => {
   } else if (url.pathname === "/api/analyze") {
     handleAnalyze(req, res);
   } else if (url.pathname.startsWith("/reports/")) {
-    const filename = basename(url.pathname);
+    const filename = decodeURIComponent(basename(url.pathname));
     const filepath = join(process.cwd(), "reports", filename);
     serveStaticFile(filepath, res);
   } else {

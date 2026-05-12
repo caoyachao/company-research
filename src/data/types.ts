@@ -83,8 +83,8 @@ export interface FinancialData {
   revenueGrowth: number;  // 营收同比增速（%）
   netProfit: number;      // 净利润（亿元）
   profitGrowth: number;   // 净利润同比增速（%）
-  roe: number;            // 净资产收益率（%）
-  grossMargin: number;    // 销售毛利率（%）
+  roe: number | null;     // 净资产收益率（%）
+  grossMargin: number | null; // 销售毛利率（%）
 }
 
 // 同行对比
@@ -95,7 +95,7 @@ export interface PeerComparison {
     name: string;
     pe: number;
     pb: number;
-    roe: number;
+    roe: number | null;
     marketCap: number;
   }[];
 }

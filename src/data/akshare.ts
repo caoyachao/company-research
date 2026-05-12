@@ -6,6 +6,11 @@ import type {
   InsiderTrading,
 } from "./types.js";
 import { getCachedData, setCachedData, buildCacheKey } from "./cache.js";
+import {
+  fetchFinancialFromDatacenter,
+  fetchValuationHistoryFromDatacenter,
+  fetchPeerComparisonFromDatacenter,
+} from "./eastmoney.js";
 
 /**
  * 通用执行 Python 脚本并解析 JSON 输出的辅助函数
@@ -73,7 +78,37 @@ function runPythonScript<T>(
 }
 
 /**
+ * 带重试的 runPythonScript：临时网络/API 抖动时自动重试
+ */
+async function runPythonScriptWithRetry<T>(
+  script: string,
+  label: string,
+  defaultValue: T,
+  isSuccess: (data: T) => boolean,
+  timeoutMs = 60000,
+  maxRetries = 2
+): Promise<T> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const data = await runPythonScript<T>(script, label, defaultValue, timeoutMs);
+    if (isSuccess(data)) {
+      if (attempt > 0) {
+        console.log(`  [重试成功] ${label} 在第 ${attempt + 1} 次尝试成功`);
+      }
+      return data;
+    }
+    if (attempt < maxRetries) {
+      console.warn(`  [重试中] ${label} 第 ${attempt + 1} 次失败，1秒后重试...`);
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  console.warn(`  [重试耗尽] ${label} 已重试 ${maxRetries} 次仍失败`);
+  return defaultValue;
+}
+
+/**
  * 获取历史估值数据（PE/PB）
+ * 主方案：datacenter-web RPT_VALUEANALYSIS_DET（HTTP 直连，最稳定）
+ * 备用：akshare stock_value_em
  */
 export async function fetchHistoricalValuation(
   stockCode: string
@@ -86,6 +121,22 @@ export async function fetchHistoricalValuation(
     return cached;
   }
 
+  // 主方案：datacenter-web HTTP 直连
+  try {
+    const data = await fetchValuationHistoryFromDatacenter(pureCode);
+    if (data.length > 0) {
+      console.log(`  [主方案] 历史估值 datacenter-web 成功: ${data.length} 条`);
+      setCachedData(cacheKey, data);
+      return data;
+    }
+    console.warn(`  [主方案] 历史估值 datacenter-web 返回空，尝试备用方案`);
+  } catch (e) {
+    console.warn(
+      `  [主方案] 历史估值 datacenter-web 失败: ${e instanceof Error ? e.message : String(e)}，尝试备用方案`
+    );
+  }
+
+  // 备用方案：akshare stock_value_em
   const script = `
 import akshare as ak
 import json
@@ -113,13 +164,26 @@ except Exception as e:
     print(json.dumps({"success": False, "error": str(e)}, ensure_ascii=False))
 `;
 
-  const data = await runPythonScript<HistoricalValuationPoint[]>(script, "历史估值", []);
-  if (data.length > 0) setCachedData(cacheKey, data);
+  const data = await runPythonScriptWithRetry<HistoricalValuationPoint[]>(
+    script,
+    "历史估值[备用akshare]",
+    [],
+    (d) => d.length > 0,
+    60000,
+    1
+  );
+  if (data.length > 0) {
+    console.log(`  [备用方案] 历史估值 akshare 成功: ${data.length} 条`);
+    setCachedData(cacheKey, data);
+  }
   return data;
 }
 
 /**
  * 获取财务数据（业绩报表）
+ * 主方案：datacenter-web RPT_LICO_FN_CPD（HTTP 直连，单股查询，最稳定）
+ * 备用 1：akshare stock_yjbb_em（按报告期查整表）
+ * 备用 2：akshare stock_financial_abstract_ths（同花顺）
  */
 export async function fetchFinancialData(stockCode: string): Promise<FinancialData[]> {
   const pureCode = stockCode.replace(/[^0-9]/g, "");
@@ -130,6 +194,22 @@ export async function fetchFinancialData(stockCode: string): Promise<FinancialDa
     return cached;
   }
 
+  // 主方案：datacenter-web HTTP 直连
+  try {
+    const data = await fetchFinancialFromDatacenter(pureCode);
+    if (data.length > 0) {
+      console.log(`  [主方案] 财务数据 datacenter-web 成功: ${data.length} 期`);
+      setCachedData(cacheKey, data);
+      return data;
+    }
+    console.warn(`  [主方案] 财务数据 datacenter-web 返回空，尝试备用方案`);
+  } catch (e) {
+    console.warn(
+      `  [主方案] 财务数据 datacenter-web 失败: ${e instanceof Error ? e.message : String(e)}，尝试备用方案`
+    );
+  }
+
+  // 备用方案：akshare（yjbb 整表 → 同花顺单股）
   // 动态计算最近 3 个年报期
   const now = new Date();
   const currentYear = now.getFullYear();
@@ -144,41 +224,104 @@ export async function fetchFinancialData(stockCode: string): Promise<FinancialDa
   const script = `
 import akshare as ak
 import json
+import math
 
+def safe_float(val, default=None):
+    try:
+        v = float(val)
+        if math.isnan(v) or math.isinf(v):
+            return default
+        return v
+    except:
+        return default
+
+results = []
+target_dates = ${JSON.stringify(reportDates)}
+
+# 备用 1：stock_yjbb_em (按报告期查整表)
 try:
-    results = []
-    for date in ${JSON.stringify(reportDates)}:
+    for date in target_dates:
         try:
             df = ak.stock_yjbb_em(date=date)
             row = df[df["股票代码"] == "${pureCode}"]
             if len(row) == 0:
                 continue
             r = row.iloc[0]
+            revenue = safe_float(r.get("营业总收入-营业总收入"))
+            rev_growth = safe_float(r.get("营业总收入-同比增长"))
+            net_profit = safe_float(r.get("净利润-净利润"))
+            profit_growth = safe_float(r.get("净利润-同比增长"))
+            roe = safe_float(r.get("净资产收益率"))
+            margin = safe_float(r.get("销售毛利率"))
             results.append({
                 "year": int(date[:4]),
                 "reportDate": date,
-                "revenue": round(float(r["营业总收入-营业总收入"]) / 1e8, 2),
-                "revenueGrowth": round(float(r["营业总收入-同比增长"]), 2),
-                "netProfit": round(float(r["净利润-净利润"]) / 1e8, 2),
-                "profitGrowth": round(float(r["净利润-同比增长"]), 2),
-                "roe": round(float(r["净资产收益率"]), 2),
-                "grossMargin": round(float(r["销售毛利率"]), 2)
+                "revenue": round(revenue / 1e8, 2) if revenue is not None else None,
+                "revenueGrowth": round(rev_growth, 2) if rev_growth is not None else None,
+                "netProfit": round(net_profit / 1e8, 2) if net_profit is not None else None,
+                "profitGrowth": round(profit_growth, 2) if profit_growth is not None else None,
+                "roe": round(roe, 2) if roe is not None else None,
+                "grossMargin": round(margin, 2) if margin is not None else None
             })
         except Exception as e:
-            print(f"Skip {date}: {e}", file=__import__("sys").stderr)
+            print(f"Skip yjbb {date}: {e}", file=__import__("sys").stderr)
             continue
-    print(json.dumps({"success": True, "data": results}, ensure_ascii=False))
 except Exception as e:
-    print(json.dumps({"success": False, "error": str(e)}, ensure_ascii=False))
+    print(f"yjbb 备用方案失败: {e}", file=__import__("sys").stderr)
+
+# 备用 2：stock_financial_abstract_ths (同花顺单股财务摘要)
+if len(results) == 0:
+    try:
+        print("备用 2: 尝试 stock_financial_abstract_ths", file=__import__("sys").stderr)
+        df = ak.stock_financial_abstract_ths(symbol="${pureCode}", indicator="按年度")
+        if df is not None and len(df) > 0:
+            df = df.head(3)  # 取最近 3 年
+            for _, r in df.iterrows():
+                report_date = str(r.get("报告期", ""))
+                if not report_date:
+                    continue
+                year_match = report_date[:4] if len(report_date) >= 4 else ""
+                if not year_match.isdigit():
+                    continue
+                revenue = safe_float(r.get("营业总收入"))
+                net_profit = safe_float(r.get("净利润"))
+                roe = safe_float(r.get("净资产收益率"))
+                margin = safe_float(r.get("销售毛利率"))
+                results.append({
+                    "year": int(year_match),
+                    "reportDate": report_date,
+                    "revenue": round(revenue / 1e8, 2) if revenue is not None and revenue > 1e7 else revenue,
+                    "revenueGrowth": None,
+                    "netProfit": round(net_profit / 1e8, 2) if net_profit is not None and net_profit > 1e6 else net_profit,
+                    "profitGrowth": None,
+                    "roe": round(roe, 2) if roe is not None else None,
+                    "grossMargin": round(margin, 2) if margin is not None else None
+                })
+    except Exception as e:
+        print(f"备用 2 失败: {e}", file=__import__("sys").stderr)
+
+print(json.dumps({"success": True, "data": results}, ensure_ascii=False))
 `;
 
-  const data = await runPythonScript<FinancialData[]>(script, "财务数据", []);
-  if (data.length > 0) setCachedData(cacheKey, data);
+  const data = await runPythonScriptWithRetry<FinancialData[]>(
+    script,
+    "财务数据[备用akshare]",
+    [],
+    (d) => d.length > 0,
+    60000,
+    1
+  );
+  if (data.length > 0) {
+    console.log(`  [备用方案] 财务数据 akshare 成功: ${data.length} 期`);
+    setCachedData(cacheKey, data);
+  }
   return data;
 }
 
 /**
  * 获取同行对比数据
+ * 主方案：datacenter-web RPT_VALUEANALYSIS_DET + RPT_LICO_FN_CPD（HTTP 直连）
+ * 备用：akshare（东方财富 stock_individual_info_em + 新浪 stock_sector_spot）
  */
 export async function fetchPeerComparison(stockCode: string): Promise<PeerComparison | null> {
   const pureCode = stockCode.replace(/[^0-9]/g, "");
@@ -189,52 +332,130 @@ export async function fetchPeerComparison(stockCode: string): Promise<PeerCompar
     return cached;
   }
 
+  // 主方案：datacenter-web HTTP 直连
+  try {
+    const data = await fetchPeerComparisonFromDatacenter(pureCode);
+    if (data && data.peers.length > 0) {
+      console.log(`  [主方案] 同行对比 datacenter-web 成功: 行业 ${data.industry}, ${data.peers.length} 家`);
+      setCachedData(cacheKey, data);
+      return data;
+    }
+    console.warn(`  [主方案] 同行对比 datacenter-web 返回空，尝试备用方案`);
+  } catch (e) {
+    console.warn(
+      `  [主方案] 同行对比 datacenter-web 失败: ${e instanceof Error ? e.message : String(e)}，尝试备用方案`
+    );
+  }
+
   const script = `
 import akshare as ak
 import json
 import math
 
+found_label = None
+found_name = None
+cons_df = None
+data_source = ""
+
+# 主方案：东方财富板块（更稳定、更快，不需遍历）
 try:
-    # 1. 获取新浪行业列表，找到目标股票所属行业
-    target_symbol = "sh" + "${pureCode}" if "${pureCode}".startswith("6") else "sz" + "${pureCode}"
-    sectors = ak.stock_sector_spot()
-    found_label = None
-    found_name = None
-    for _, row in sectors.iterrows():
+    info = ak.stock_individual_info_em(symbol="${pureCode}")
+    industry = None
+    for _, row in info.iterrows():
+        if str(row.get("item", "")) == "行业":
+            industry = str(row.get("value", ""))
+            break
+    if industry:
+        cons_df = ak.stock_board_industry_cons_em(symbol=industry)
+        if cons_df is not None and len(cons_df) > 0:
+            found_label = industry
+            found_name = industry
+            data_source = "eastmoney"
+            print(f"主方案: 找到东方财富行业 {industry}", file=__import__("sys").stderr)
+except Exception as e:
+    print(f"东方财富板块查询失败: {e}", file=__import__("sys").stderr)
+
+# 备用方案：新浪行业（遍历）
+if not found_label:
+    try:
+        print("备用方案: 尝试新浪行业分类", file=__import__("sys").stderr)
+        target_symbol = "sh" + "${pureCode}" if "${pureCode}".startswith("6") else "sz" + "${pureCode}"
+        sectors = ak.stock_sector_spot()
+        for _, row in sectors.iterrows():
+            try:
+                df = ak.stock_sector_detail(sector=row["label"])
+                if target_symbol in df["symbol"].values:
+                    found_label = row["label"]
+                    found_name = row["板块"]
+                    cons_df = df
+                    data_source = "sina"
+                    break
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"新浪行业查询失败: {e}", file=__import__("sys").stderr)
+
+if not found_label or cons_df is None:
+    print(json.dumps({"success": False, "error": "无法找到该股票所属行业"}, ensure_ascii=False))
+    exit(0)
+
+try:
+    # 批量获取 ROE（最近两期年报）
+    report_dates = ["20251231", "20241231", "20231231"]
+    roe_map = {}
+    for date in report_dates:
         try:
-            df = ak.stock_sector_detail(sector=row["label"])
-            if target_symbol in df["symbol"].values:
-                found_label = row["label"]
-                found_name = row["板块"]
-                break
+            df_yjbb = ak.stock_yjbb_em(date=date)
+            for _, r in df_yjbb.iterrows():
+                code = str(r.get("股票代码", ""))
+                roe_val = r.get("净资产收益率")
+                if code and roe_val is not None and code not in roe_map:
+                    try:
+                        rv = float(roe_val)
+                        if not math.isnan(rv):
+                            roe_map[code] = round(rv, 2)
+                    except:
+                        pass
         except Exception:
             continue
-
-    if not found_label:
-        print(json.dumps({"success": False, "error": "无法找到该股票所属行业"}, ensure_ascii=False))
-        exit(0)
-
-    # 2. 获取行业成分股及估值
-    cons = ak.stock_sector_detail(sector=found_label)
 
     peers = []
-    for _, row in cons.iterrows():
+    for _, row in cons_df.iterrows():
         try:
-            pe_val = row.get("per")
-            pb_val = row.get("pb")
-            mktcap_val = row.get("mktcap")
+            if data_source == "eastmoney":
+                # 东方财富板块列字段
+                code = str(row.get("代码", row.get("code", "")))
+                name = str(row.get("名称", row.get("name", "")))
+                pe_val = row.get("市盈率-动态", row.get("市盈率", row.get("per")))
+                pb_val = row.get("市净率", row.get("pb"))
+                mktcap_val = row.get("总市值", row.get("mktcap"))
+                pe = float(pe_val) if pe_val is not None and not (isinstance(pe_val, float) and math.isnan(pe_val)) else 0
+                pb = float(pb_val) if pb_val is not None and not (isinstance(pb_val, float) and math.isnan(pb_val)) else 0
+                mktcap = float(mktcap_val) if mktcap_val is not None and not (isinstance(mktcap_val, float) and math.isnan(mktcap_val)) else 0
+            else:
+                # 新浪行业字段
+                code = str(row.get("code", ""))
+                name = str(row.get("name", ""))
+                pe_val = row.get("per")
+                pb_val = row.get("pb")
+                mktcap_val = row.get("mktcap")
+                pe = float(pe_val) if pe_val is not None and not math.isnan(pe_val) else 0
+                pb = float(pb_val) if pb_val is not None and not math.isnan(pb_val) else 0
+                mktcap = float(mktcap_val) * 10000 if mktcap_val is not None and not math.isnan(mktcap_val) else 0
+
             peers.append({
-                "code": str(row.get("code", "")),
-                "name": str(row.get("name", "")),
-                "pe": float(pe_val) if pe_val is not None and not math.isnan(pe_val) else 0,
-                "pb": float(pb_val) if pb_val is not None and not math.isnan(pb_val) else 0,
-                "roe": 0,
-                "marketCap": float(mktcap_val) * 10000 if mktcap_val is not None and not math.isnan(mktcap_val) else 0
+                "code": code,
+                "name": name,
+                "pe": pe,
+                "pb": pb,
+                "roe": roe_map.get(code, None),
+                "marketCap": mktcap
             })
-        except Exception:
+        except Exception as e:
+            print(f"Skip peer row: {e}", file=__import__("sys").stderr)
             continue
 
-    # 按市值排序，取前6家（含目标股）
+    # 按市值排序，取前6家
     peers.sort(key=lambda x: x["marketCap"], reverse=True)
     peers = peers[:6]
 
@@ -246,8 +467,18 @@ except Exception as e:
     print(json.dumps({"success": False, "error": str(e)}, ensure_ascii=False))
 `;
 
-  const data = await runPythonScript<PeerComparison | null>(script, "同行对比", null, 120000);
-  if (data) setCachedData(cacheKey, data);
+  const data = await runPythonScriptWithRetry<PeerComparison | null>(
+    script,
+    "同行对比[备用akshare]",
+    null,
+    (d) => d !== null,
+    120000,
+    1
+  );
+  if (data) {
+    console.log(`  [备用方案] 同行对比 akshare 成功: 行业 ${data.industry}, ${data.peers.length} 家`);
+    setCachedData(cacheKey, data);
+  }
   return data;
 }
 
@@ -380,7 +611,14 @@ except Exception as e:
     print(json.dumps({"success": False, "error": str(e)}, ensure_ascii=False))
 `;
 
-  const data = await runPythonScript<InsiderTrading | null>(script, "增减持", null, 60000);
+  const data = await runPythonScriptWithRetry<InsiderTrading | null>(
+    script,
+    "增减持",
+    null,
+    (d) => d !== null,
+    60000,
+    1
+  );
   if (data) setCachedData(cacheKey, data);
   return data;
 }

@@ -1,6 +1,7 @@
 node_modules/
 dist/
 cache/
+logs/
 reports/*.md
 reports/*.html
 .env

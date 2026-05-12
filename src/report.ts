@@ -24,7 +24,7 @@ export function generateReport(
     groups.get(r.category)!.push(r);
   }
 
-  let md = `# 股票全面分析报告：${stockCode}\n\n`;
+  let md = `# 上市公司调研报告：${stockCode}\n\n`;
   md += `生成时间：${timestamp}\n\n`;
   md += `---\n\n`;
 
@@ -264,7 +264,7 @@ export function generateHTMLReport(
 <body>
   <div class="container">
     <div class="header">
-      <h1>股票全面分析报告：${stockCode}</h1>
+      <h1>上市公司调研报告：${stockCode}</h1>
       <div class="meta">生成时间：${timestamp}</div>
     </div>
     ${sectionsHtml}

@@ -35,17 +35,26 @@ interface ChatCompletionResponse {
 /**
  * Send a chat completion request to the LLM Gateway.
  */
+export interface LLMResponse {
+  content: string;
+  model: string;
+}
+
 export async function callLLM(
   prompt: string,
   options?: {
     systemPrompt?: string;
     timeout?: number;
     model?: string;
+    strategy?: "largest" | "cheapest" | "fastest" | "auto";
+    maxTokens?: number;
     signal?: AbortSignal;
   }
-): Promise<string> {
+): Promise<LLMResponse> {
   const timeout = options?.timeout || GATEWAY_TIMEOUT;
   const model = options?.model || "auto";
+  const strategy = options?.strategy || "largest";
+  const maxTokens = options?.maxTokens || 2048;
 
   const messages: ChatMessage[] = [];
   if (options?.systemPrompt) {
@@ -71,8 +80,10 @@ export async function callLLM(
       },
       body: JSON.stringify({
         model,
+        strategy,
         messages,
         temperature: 0.7,
+        max_tokens: maxTokens,
       }),
       signal: controller.signal,
     });
@@ -89,7 +100,7 @@ export async function callLLM(
     if (!content) {
       throw new Error("Empty response from LLM Gateway");
     }
-    return content;
+    return { content, model: data.model || "unknown" };
   } catch (error) {
     clearTimeout(timer);
     if (error instanceof Error && error.name === "AbortError") {
@@ -115,10 +126,13 @@ export async function checkGatewayHealth(): Promise<{
   status: string;
 }> {
   try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
     const response = await fetch(
       `${GATEWAY_BASE_URL.replace("/v1", "")}/health`,
-      { signal: AbortSignal.timeout(5000) }
+      { signal: controller.signal }
     );
+    clearTimeout(timer);
     if (!response.ok) {
       return { ok: false, status: `HTTP ${response.status}` };
     }
