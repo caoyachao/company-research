@@ -12,7 +12,8 @@ export interface StepResult {
 
 export function generateReport(
   stockCode: string,
-  results: StepResult[]
+  results: StepResult[],
+  companyName?: string
 ): string {
   const now = new Date();
   const timestamp = `${now.getFullYear()}年${String(now.getMonth() + 1).padStart(2, "0")}月${String(now.getDate()).padStart(2, "0")}日 ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
@@ -24,7 +25,8 @@ export function generateReport(
     groups.get(r.category)!.push(r);
   }
 
-  let md = `# 上市公司调研报告：${stockCode}\n\n`;
+  const header = companyName ? `${companyName}（${stockCode}）` : stockCode;
+  let md = `# 上市公司调研报告：${header}\n\n`;
   md += `生成时间：${timestamp}\n\n`;
   md += `---\n\n`;
 
@@ -80,7 +82,8 @@ function categoryColor(category: string): string {
 
 export function generateHTMLReport(
   stockCode: string,
-  results: StepResult[]
+  results: StepResult[],
+  companyName?: string
 ): string {
   const timestamp = getReportTimestamp();
 
@@ -118,12 +121,13 @@ export function generateHTMLReport(
     `;
   }
 
+  const header = companyName ? `${companyName}（${stockCode}）` : stockCode;
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>股票分析报告 - ${stockCode}</title>
+  <title>股票分析报告 - ${header}</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -264,7 +268,7 @@ export function generateHTMLReport(
 <body>
   <div class="container">
     <div class="header">
-      <h1>上市公司调研报告：${stockCode}</h1>
+      <h1>上市公司调研报告：${header}</h1>
       <div class="meta">生成时间：${timestamp}</div>
     </div>
     ${sectionsHtml}

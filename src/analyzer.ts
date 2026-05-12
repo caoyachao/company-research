@@ -4,9 +4,9 @@ import {
   promptExtractSummary,
   type AnalysisStep,
 } from "./prompts/index.js";
-import { type DataContext } from "./data/types.js";
+import { type DataContext, type FinancialData } from "./data/types.js";
 import { type StepResult } from "./report.js";
-import { fetchStockData, resolveStockCode } from "./data/eastmoney.js";
+import { fetchStockData, resolveStockCode, fetchFinancialRiskMetrics, fetchMainBusinessComposition } from "./data/eastmoney.js";
 import {
   fetchHistoricalValuation,
   fetchFinancialData,
@@ -64,49 +64,189 @@ export interface AnalyzerOptions {
  * 纯程序化生成第6步：估值与成长性匹配度
  */
 function generateValuationMatchAnalysis(ctx: DataContext): string {
-  const { pe, pb } = ctx.valuation;
+  const { pe, pb, marketCap } = ctx.valuation;
+  const { financials, peerComparison } = ctx;
 
-  // 简化的匹配逻辑（因为没有历史增速API，基于PE和PB做粗略判断）
+  // 提取最新财务数据
+  let latestFinancial: FinancialData | null = null;
+  if (financials && financials.length > 0) {
+    latestFinancial = [...financials].sort((a, b) => a.year - b.year)[financials.length - 1];
+  }
+
+  // ===== 方案一：PEG 分析（有增速数据且盈利）=====
+  if (pe > 0 && latestFinancial && latestFinancial.profitGrowth != null && latestFinancial.profitGrowth > 0) {
+    const peg = pe / latestFinancial.profitGrowth;
+
+    let pegConclusion = "";
+    let pegReason = "";
+    if (peg < 0.5) {
+      pegConclusion = "显著低估";
+      pegReason = `当前 PEG = ${peg.toFixed(2)}（PE ${pe.toFixed(2)} ÷ 净利润增速 ${latestFinancial.profitGrowth.toFixed(2)}%），低于 0.5，估值水平显著低于成长性支撑。`;
+    } else if (peg < 1.0) {
+      pegConclusion = "低估";
+      pegReason = `当前 PEG = ${peg.toFixed(2)}（PE ${pe.toFixed(2)} ÷ 净利润增速 ${latestFinancial.profitGrowth.toFixed(2)}%），处于 0.5-1.0 区间，估值略低于成长性支撑，具备一定安全边际。`;
+    } else if (peg < 1.5) {
+      pegConclusion = "合理匹配";
+      pegReason = `当前 PEG = ${peg.toFixed(2)}（PE ${pe.toFixed(2)} ÷ 净利润增速 ${latestFinancial.profitGrowth.toFixed(2)}%），处于 1.0-1.5 区间，估值与成长性基本匹配。`;
+    } else if (peg < 2.0) {
+      pegConclusion = "偏高";
+      pegReason = `当前 PEG = ${peg.toFixed(2)}（PE ${pe.toFixed(2)} ÷ 净利润增速 ${latestFinancial.profitGrowth.toFixed(2)}%），处于 1.5-2.0 区间，估值略高于成长性支撑。`;
+    } else {
+      pegConclusion = "显著高估";
+      pegReason = `当前 PEG = ${peg.toFixed(2)}（PE ${pe.toFixed(2)} ÷ 净利润增速 ${latestFinancial.profitGrowth.toFixed(2)}%），高于 2.0，估值水平远高于成长性支撑，存在高估风险。`;
+    }
+
+    return `## 估值与成长性匹配度分析
+
+**当前估值与成长性：**
+- 市盈率（PE）：${pe.toFixed(2)}
+- 市净率（PB）：${pb.toFixed(2)}
+- 最新净利润增速：${latestFinancial.profitGrowth.toFixed(2)}%（${latestFinancial.year}年）
+- 最新营收增速：${latestFinancial.revenueGrowth.toFixed(2)}%（${latestFinancial.year}年）
+
+**核心指标：PEG = ${peg.toFixed(2)}**
+
+**匹配度判断：${pegConclusion}**
+
+**分析依据：**
+${pegReason}
+
+**参考标准（PEG 法）：**
+| PEG 区间 | 估值判断 | 含义 |
+|---------|---------|------|
+| < 0.5 | 显著低估 | 估值远低于成长性支撑 |
+| 0.5-1.0 | 低估 | 估值低于成长性支撑 |
+| 1.0-1.5 | 合理匹配 | 估值与成长性基本匹配 |
+| 1.5-2.0 | 偏高 | 估值略高于成长性支撑 |
+| > 2.0 | 显著高估 | 估值远高于成长性支撑 |
+
+> 注：PEG = PE / 净利润增速。增速数据来源于最新财报。
+`;
+  }
+
+  // ===== 方案二：PB-ROE 分析（无增速或亏损，但有 ROE 和同行数据）=====
+  const currentROE = latestFinancial?.roe ?? 0;
+  const roePeers = peerComparison?.peers
+    .filter((p) => p.roe != null && !isNaN(p.roe) && p.pb > 0)
+    .map((p) => ({ roe: p.roe!, pb: p.pb })) || [];
+
+  if (currentROE > 0 && roePeers.length >= 3) {
+    const xs = roePeers.map((p) => p.roe);
+    const ys = roePeers.map((p) => p.pb);
+    const n = xs.length;
+    const sumX = xs.reduce((a, b) => a + b, 0);
+    const sumY = ys.reduce((a, b) => a + b, 0);
+    const sumXY = xs.reduce((sum, x, i) => sum + x * ys[i], 0);
+    const sumXX = xs.reduce((sum, x) => sum + x * x, 0);
+    const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+    const intercept = (sumY - slope * sumX) / n;
+    const expectedPB = slope * currentROE + intercept;
+    const premium = expectedPB > 0 ? ((pb - expectedPB) / expectedPB) * 100 : 0;
+
+    let pbRoeConclusion = "";
+    let pbRoeReason = "";
+    if (premium < -30) {
+      pbRoeConclusion = "显著低估";
+      pbRoeReason = `当前 PB（${pb.toFixed(2)}）较行业 PB-ROE 回归预期（${expectedPB.toFixed(2)}）折价 ${Math.abs(premium).toFixed(1)}%，估值显著低于 ROE 所支撑的水平。`;
+    } else if (premium < -15) {
+      pbRoeConclusion = "低估";
+      pbRoeReason = `当前 PB（${pb.toFixed(2)}）较行业 PB-ROE 回归预期（${expectedPB.toFixed(2)}）折价 ${Math.abs(premium).toFixed(1)}%，估值略低于 ROE 所支撑的水平。`;
+    } else if (premium < 15) {
+      pbRoeConclusion = "合理匹配";
+      pbRoeReason = `当前 PB（${pb.toFixed(2)}）与行业 PB-ROE 回归预期（${expectedPB.toFixed(2)}）接近，估值与 ROE 水平基本匹配。`;
+    } else if (premium < 30) {
+      pbRoeConclusion = "偏高";
+      pbRoeReason = `当前 PB（${pb.toFixed(2)}）较行业 PB-ROE 回归预期（${expectedPB.toFixed(2)}）溢价 ${premium.toFixed(1)}%，估值略高于 ROE 所支撑的水平。`;
+    } else {
+      pbRoeConclusion = "显著高估";
+      pbRoeReason = `当前 PB（${pb.toFixed(2)}）较行业 PB-ROE 回归预期（${expectedPB.toFixed(2)}）溢价 ${premium.toFixed(1)}%，估值显著高于 ROE 所支撑的水平。`;
+    }
+
+    return `## 估值与成长性匹配度分析
+
+**当前估值与盈利能力：**
+- 市盈率（PE）：${pe > 0 ? pe.toFixed(2) : "亏损（PE 失效）"}
+- 市净率（PB）：${pb.toFixed(2)}
+- 净资产收益率（ROE）：${currentROE.toFixed(2)}%
+
+**匹配度判断：${pbRoeConclusion}**
+
+**分析依据：**
+${pbRoeReason}
+
+**参考标准（PB-ROE 回归法）：**
+基于同行业 ${n} 家公司的 PB-ROE 关系，当前 ROE（${currentROE.toFixed(2)}%）对应的预期 PB 约为 ${expectedPB.toFixed(2)}。
+
+> 注：由于公司${pe <= 0 ? "处于亏损状态，PE 指标失效" : "净利润增速数据不足"}，改用 PB-ROE 框架分析。ROE 数据来源于最新财报。
+`;
+  }
+
+  // ===== 方案三：PS 分析（有营收数据）=====
+  if (latestFinancial && latestFinancial.revenue > 0 && marketCap > 0) {
+    const ps = marketCap / latestFinancial.revenue;
+    let psConclusion = "";
+    let psReason = "";
+    if (ps < 2) {
+      psConclusion = "低估";
+      psReason = `当前 PS = ${ps.toFixed(2)}（市值 ${marketCap.toFixed(2)}亿元 ÷ 营收 ${latestFinancial.revenue.toFixed(2)}亿元），处于较低水平。`;
+    } else if (ps < 5) {
+      psConclusion = "合理";
+      psReason = `当前 PS = ${ps.toFixed(2)}，处于中等水平，估值与营收规模基本匹配。`;
+    } else if (ps < 10) {
+      psConclusion = "偏高";
+      psReason = `当前 PS = ${ps.toFixed(2)}，处于较高水平，需关注营收增速能否支撑当前估值。`;
+    } else {
+      psConclusion = "显著高估";
+      psReason = `当前 PS = ${ps.toFixed(2)}，处于高位，估值水平远高于营收规模支撑。`;
+    }
+
+    return `## 估值与成长性匹配度分析
+
+**当前估值与营收规模：**
+- 市盈率（PE）：${pe > 0 ? pe.toFixed(2) : "亏损（PE 失效）"}
+- 市净率（PB）：${pb.toFixed(2)}
+- 市销率（PS）：${ps.toFixed(2)}
+- 最新营收：${latestFinancial.revenue.toFixed(2)}亿元（${latestFinancial.year}年）
+- 最新营收增速：${latestFinancial.revenueGrowth.toFixed(2)}%
+
+**匹配度判断：${psConclusion}**
+
+**分析依据：**
+${psReason}
+
+> 注：由于${pe <= 0 ? "公司处于亏损状态" : "净利润增速数据不足"}且缺少足够同行 ROE 数据，改用 PS 框架作为参考。PS 适用于亏损但营收规模较大的公司。
+`;
+  }
+
+  // ===== 终极 fallback：简单 PB 绝对判断 =====
   let conclusion = "";
   let reason = "";
-
-  if (pe < 0) {
-    conclusion = "无法判断（公司亏损，PE为负）";
-    reason = "当前公司处于亏损状态，市盈率指标失效，无法通过PE与成长性匹配度进行判断。";
-  } else if (pe < 15) {
-    conclusion = "匹配";
-    reason = `当前PE=${pe.toFixed(2)}，处于较低水平。一般而言，PE<15属于价值型估值区间，如果公司成长性稳定，则估值与成长性基本匹配。`;
-  } else if (pe < 30) {
-    conclusion = "基本匹配";
-    reason = `当前PE=${pe.toFixed(2)}，处于中等水平（15-30倍）。对于成长性良好的公司，此估值区间较为合理。`;
-  } else if (pe < 50) {
-    conclusion = "需结合增速判断";
-    reason = `当前PE=${pe.toFixed(2)}，处于较高水平（30-50倍）。若公司营收增速能持续保持在20%以上，则估值基本匹配；若增速低于15%，则可能存在高估。`;
+  if (pb < 1) {
+    conclusion = "破净";
+    reason = `当前 PB = ${pb.toFixed(2)}，低于 1，处于破净状态。`;
+  } else if (pb < 2) {
+    conclusion = "偏低";
+    reason = `当前 PB = ${pb.toFixed(2)}，处于较低水平。`;
+  } else if (pb < 4) {
+    conclusion = "中等";
+    reason = `当前 PB = ${pb.toFixed(2)}，处于中等水平。`;
   } else {
-    conclusion = "不匹配（偏高）";
-    reason = `当前PE=${pe.toFixed(2)}，处于高位（>50倍）。除非公司能保持极高的成长性（如增速>30%），否则估值水平与成长性不匹配，存在高估风险。`;
+    conclusion = "偏高";
+    reason = `当前 PB = ${pb.toFixed(2)}，处于较高水平。`;
   }
 
   return `## 估值与成长性匹配度分析
 
 **当前估值：**
-- 市盈率（PE）：${pe.toFixed(2)}
+- 市盈率（PE）：${pe > 0 ? pe.toFixed(2) : "亏损（PE 失效）"}
 - 市净率（PB）：${pb.toFixed(2)}
 
 **匹配度判断：${conclusion}**
 
 **分析依据：**
-${reason}
+${reason}由于缺少成长性数据（净利润增速、ROE、营收数据均不足），无法计算 PEG、PB-ROE 或 PS 指标，仅能做粗略的 PB 绝对值判断。
 
-**参考标准：**
-| PE区间 | 估值特征 | 匹配的成长性要求 |
-|--------|---------|----------------|
-| < 15 | 价值型 | 增速 5-10% |
-| 15-30 | 合理型 | 增速 10-20% |
-| 30-50 | 成长型 | 增速 20-30% |
-| > 50 | 高成长型 | 增速 > 30% |
-
-> 注：由于缺乏实时财务增速API，以上分析基于当前PE水平和一般性估值标准。建议结合最新财报中的营收增速做进一步验证。
+> 注：建议补充最新财报数据以进行更精准的估值-成长性匹配分析。
 `;
 }
 
@@ -117,7 +257,7 @@ function truncateDetail(detail: string, maxLen = 2000): string {
 
 export async function analyzeStock(
   options: AnalyzerOptions
-): Promise<StepResult[]> {
+): Promise<{ results: StepResult[]; companyName: string }> {
   const { stockCode, useContext = true, timeout, onProgress, onEvent } = options;
 
   function emitEvent(event: Omit<AnalysisEvent, "timestamp">) {
@@ -144,13 +284,15 @@ export async function analyzeStock(
     }
 
     const dataFetchStart = Date.now();
-    const [{ realtime, kline }, historicalPE, financials, peerComparison, insiderTrading] =
+    const [{ realtime, kline }, historicalPE, financials, peerComparison, insiderTrading, financialRisk, mainBusiness] =
       await Promise.all([
         fetchStockData(resolvedCode),
         fetchHistoricalValuation(resolvedCode),
         fetchFinancialData(resolvedCode),
         fetchPeerComparison(resolvedCode),
         fetchInsiderTrading(resolvedCode),
+        fetchFinancialRiskMetrics(resolvedCode).catch(() => null),
+        fetchMainBusinessComposition(resolvedCode).catch(() => null),
       ]);
 
     const technical = calculateTechnicalIndicators(realtime, kline);
@@ -210,6 +352,23 @@ export async function analyzeStock(
       detail: `${realtime.name} 当前价: ¥${realtime.price.toFixed(2)}, PE: ${realtime.pe.toFixed(2)}, PB: ${realtime.pb.toFixed(2)}`,
     });
 
+    if (financialRisk) {
+      console.log(`  ✓ 财务风险指标获取完成 (${financialRisk.reportName})`);
+      emitEvent({
+        type: "data_fetched",
+        message: "财务风险指标获取完成",
+        detail: `${financialRisk.reportName}：资产负债率 ${financialRisk.debtAssetRatio}%, 经营现金流/净利润 ${financialRisk.operatingCashToProfitRatio ?? "—"}`,
+      });
+    }
+    if (mainBusiness) {
+      console.log(`  ✓ 主营业务构成获取完成 (${mainBusiness.reportName})`);
+      emitEvent({
+        type: "data_fetched",
+        message: "主营业务构成获取完成",
+        detail: `${mainBusiness.reportName}：${mainBusiness.byProduct.length} 个产品类目, ${mainBusiness.byRegion.length} 个区域`,
+      });
+    }
+
     const dataContext: DataContext = {
       stockCode,
       realtime,
@@ -219,7 +378,10 @@ export async function analyzeStock(
       financials,
       peerComparison,
       insiderTrading,
+      financialRisk,
+      mainBusiness,
       summaries: [],
+      stepSummaries: {},
     };
 
     console.log(`  ✓ 技术指标计算完成`);
@@ -240,6 +402,7 @@ export async function analyzeStock(
 
     const results: StepResult[] = [];
     const summaries: string[] = [];
+    const stepSummaryMap: Record<number, string> = {};
 
     for (const step of ANALYSIS_STEPS) {
       const stepStart = Date.now();
@@ -307,7 +470,7 @@ export async function analyzeStock(
         });
 
         if (step.id === 3 && financials.length > 0) {
-          content = generateFinancialAnalysis(financials);
+          content = generateFinancialAnalysis(financials, peerComparison);
         } else if (step.id === 4 && peStats) {
           content = generatePEPercentileAnalysis(
             valuation.pe,
@@ -325,7 +488,7 @@ export async function analyzeStock(
         } else if (step.id === 10) {
           content = generateMovingAverageAnalysis(technical);
         } else if (step.id === 11) {
-          content = generateSupportResistanceAnalysis(technical);
+          content = generateSupportResistanceAnalysis(technical, kline);
         }
         console.log(`  ✓ 程序化输出完成`);
         emitEvent({
@@ -340,6 +503,7 @@ export async function analyzeStock(
         if (useContext && step.id < 13) {
           summary = `${step.title}：已基于实时数据程序化计算`;
           summaries.push(`【${step.title}】${summary}`);
+          stepSummaryMap[step.id] = summary;
         }
 
         const duration = Date.now() - stepStart;
@@ -376,6 +540,7 @@ export async function analyzeStock(
       const ctx: DataContext = {
         ...dataContext,
         summaries: useContext ? [...summaries] : undefined,
+        stepSummaries: useContext ? { ...stepSummaryMap } : undefined,
       };
 
       const prompt = step.promptFn(ctx);
@@ -437,6 +602,7 @@ export async function analyzeStock(
               detail: truncateDetail(summary),
             });
             summaries.push(`【${step.title}】${summary}`);
+            stepSummaryMap[step.id] = summary;
             console.log(`  ✓ 摘要已提取`);
           } catch (e) {
             const errMsg = e instanceof Error ? e.message : String(e);
@@ -450,6 +616,7 @@ export async function analyzeStock(
             });
             summary = content.slice(0, 100) + "...";
             summaries.push(`【${step.title}】${summary}`);
+            stepSummaryMap[step.id] = summary;
           }
         }
 
@@ -503,7 +670,7 @@ export async function analyzeStock(
       detail: `共 ${results.length} 个步骤`,
     });
 
-    return results;
+    return { results, companyName: realtime.name };
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     emitEvent({
