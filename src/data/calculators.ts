@@ -280,11 +280,63 @@ export function generatePEPercentileAnalysis(
   const p3y = calcPeriodPercentile(threeYearsAgo);
   const p5y = calcPeriodPercentile(fiveYearsAgo);
 
-  // 寻找历史上的相似估值日期
-  const similarDates = historicalPEs
-    .filter((p) => Math.abs(p.peTtm - currentPE) / currentPE < 0.05)
-    .slice(-3)
-    .map((p) => p.date);
+  // 寻找历史上的相似估值日期（分时段，排除近期噪音）
+  const nowTs = new Date(endDate).getTime();
+
+  // 计算后续N日涨跌幅
+  function calcSubsequentReturn(date: string, nDays: number): string {
+    const idx = historicalPEs.findIndex((p) => p.date === date);
+    if (idx < 0 || idx + nDays >= historicalPEs.length) return "—";
+    const start = historicalPEs[idx].close;
+    const end = historicalPEs[idx + nDays].close;
+    const ret = ((end - start) / start) * 100;
+    return `${ret > 0 ? "+" : ""}${ret.toFixed(1)}%`;
+  }
+
+  // 分时段找最匹配的日期
+  const windows = [
+    { label: "近1年", minDays: 60, maxDays: 365 },
+    { label: "1-3年", minDays: 365, maxDays: 365 * 3 },
+    { label: "3-5年", minDays: 365 * 3, maxDays: 365 * 5 },
+    { label: "5年以上", minDays: 365 * 5, maxDays: Infinity },
+  ];
+
+  const similarMatches = windows
+    .map((w) => {
+      const candidates = historicalPEs.filter((p) => {
+        const d = new Date(p.date).getTime();
+        const days = (nowTs - d) / (1000 * 60 * 60 * 24);
+        return (
+          days >= w.minDays &&
+          days < w.maxDays &&
+          Math.abs(p.peTtm - currentPE) / currentPE < 0.1
+        );
+      });
+      if (candidates.length === 0) return null;
+      const best = candidates.reduce((best, curr) =>
+        Math.abs(curr.peTtm - currentPE) < Math.abs(best.peTtm - currentPE)
+          ? curr
+          : best
+      );
+      const years = (
+        (nowTs - new Date(best.date).getTime()) /
+        (1000 * 60 * 60 * 24 * 365)
+      ).toFixed(1);
+      return {
+        date: best.date,
+        yearsAgo: years,
+        pe: best.peTtm,
+        ret20: calcSubsequentReturn(best.date, 20),
+        ret60: calcSubsequentReturn(best.date, 60),
+        label: w.label,
+      };
+    })
+    .filter(Boolean);
+
+  const similarSection =
+    similarMatches.length > 0
+      ? `\n**历史上接近当前估值的日期（排除近期噪音）：**\n\n| 日期 | 距今 | 当时PE | 后续20日涨跌 | 后续60日涨跌 |\n|------|------|--------|-------------|-------------|\n${similarMatches.map((m) => `| ${m!.date} | ${m!.yearsAgo}年（${m!.label}） | ${m!.pe.toFixed(2)} | ${m!.ret20} | ${m!.ret60} |`).join("\n")}`
+      : "\n历史上排除近期噪音后，未找到与当前估值显著相似的交易日。";
 
   return `## 市盈率（PE）历史百分位分析
 
@@ -318,8 +370,7 @@ ${
     : zone === "高估"
       ? `当前 PE（${currentPE.toFixed(2)}）高于历史 75% 分位数（${peStats.p75.toFixed(2)}），处于历史估值高位区间。从历史数据看，估值高于此水平的交易日占比仅 ${(100 - percentile).toFixed(1)}%，属于相对高估区域。`
       : `当前 PE（${currentPE.toFixed(2)}）处于历史估值中间区间（25%-75% 分位数之间），从历史数据看属于合理估值范围。`
-}
-${similarDates.length > 0 ? `\n历史上接近当前估值的日期：${similarDates.join("、")}` : ""}
+}${similarSection}
 
 > 注：PE-TTM 为滚动市盈率，基于最近四个季度净利润计算。历史数据来源于东方财富。
 `;
