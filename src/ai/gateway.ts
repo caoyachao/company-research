@@ -9,6 +9,7 @@ const GATEWAY_TIMEOUT = parseInt(
   process.env.LLM_GATEWAY_TIMEOUT || "120",
   10
 );
+const GATEWAY_MODEL = process.env.LLM_GATEWAY_MODEL || "deepseek-v4-pro";
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -52,7 +53,7 @@ export async function callLLM(
   }
 ): Promise<LLMResponse> {
   const timeout = options?.timeout || GATEWAY_TIMEOUT;
-  const model = options?.model || "auto";
+  const model = options?.model || GATEWAY_MODEL;
   const strategy = options?.strategy || "largest";
   const maxTokens = options?.maxTokens || 2048;
 
