@@ -1,0 +1,13 @@
+# Cloudflare Tunnel 配置文件模板
+# 使用方法:
+#   1. 执行 cloudflared tunnel create stock-api，记录 Tunnel ID
+#   2. 将本文件复制到 ~/.cloudflared/config.yml
+#   3. 替换 <YOUR_TUNNEL_ID> 为实际 ID
+
+tunnel: <YOUR_TUNNEL_ID>
+credentials-file: /root/.cloudflared/<YOUR_TUNNEL_ID>.json
+
+ingress:
+  - hostname: ""
+    service: http://localhost:3000
+  - service: http_status:404
