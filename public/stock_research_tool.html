@@ -1303,13 +1303,9 @@ const app = {
     errorMsg.classList.remove('active');
 
     try {
-      // 实际部署时使用真实API
-      // const res = await fetch(`${CONFIG.apiBase}/api/analyze/${input}`);
-      // if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // const data = await res.json();
-
-      // 开发阶段使用模拟数据
-      const data = await this.fetchMockData(input);
+      const res = await fetch(`${CONFIG.apiBase}/api/analyze/${input}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
 
       this.render(data);
       results.classList.add('active');
@@ -1320,66 +1316,6 @@ const app = {
       loading.classList.remove('active');
       btn.disabled = false;
     }
-  },
-
-  // 模拟数据（开发测试用，部署时删除）
-  async fetchMockData(code) {
-    await new Promise(r => setTimeout(r, 800));
-    const now = new Date();
-    const kline = [];
-    let price = 1680;
-    const historicalPE = [];
-    for (let i = 0; i < 365 * 5; i++) {
-      const date = new Date(now.getFullYear() - 5, now.getMonth(), now.getDate() + i);
-      if (date > now) break;
-      const change = (Math.random() - 0.48) * 30;
-      const open = price;
-      const close = price + change;
-      const high = Math.max(open, close) + Math.random() * 10;
-      const low = Math.min(open, close) - Math.random() * 10;
-      kline.push({ date: date.toISOString().slice(0, 10), open, close, high, low, volume: 1e6 + Math.random() * 2e6 });
-      price = close;
-      const pe = 15 + Math.random() * 40 + Math.sin(i / 200) * 15;
-      historicalPE.push({ date: date.toISOString().slice(0, 10), close, peTtm: pe, pb: 3 + Math.random() * 8 });
-    }
-    const currentPE = historicalPE[historicalPE.length - 1].peTtm;
-    const currentPB = historicalPE[historicalPE.length - 1].pb;
-    return {
-      code,
-      name: '贵州茅台',
-      realtime: { code, name: '贵州茅台', price, open: price - 5, high: price + 10, low: price - 8, pe: currentPE, pb: currentPB, marketCap: 2110000000000 },
-      kline,
-      historicalPE,
-      financials: [
-        { year: 2022, revenue: 1275.54, revenueGrowth: 16.87, netProfit: 627.16, profitGrowth: 19.55, roe: 30.26, grossMargin: 91.87 },
-        { year: 2023, revenue: 1505.60, revenueGrowth: 18.04, netProfit: 747.34, profitGrowth: 19.16, roe: 34.19, grossMargin: 91.96 },
-        { year: 2024, revenue: 1741.44, revenueGrowth: 15.66, netProfit: 862.28, profitGrowth: 15.38, roe: 35.12, grossMargin: 92.11 },
-      ],
-      peerComparison: {
-        industry: '白酒',
-        peers: [
-          { code: '000858.SZ', name: '五粮液', pe: 18.5, pb: 4.2, roe: 22.5, marketCap: 600000000000 },
-          { code: '000568.SZ', name: '泸州老窖', pe: 22.0, pb: 5.5, roe: 28.0, marketCap: 350000000000 },
-          { code: '600809.SH', name: '山西汾酒', pe: 25.0, pb: 7.0, roe: 32.0, marketCap: 300000000000 },
-        ],
-      },
-      financialRisk: {
-        reportName: '2025年报',
-        accountsReceivable: 0.5, accountsReceivableYoY: 5.0,
-        inventory: 45.0, inventoryYoY: 12.0,
-        monetaryFunds: 580.0,
-        debtAssetRatio: 25.5,
-        totalRevenue: 1741.44, totalRevenueYoY: 15.66,
-        parentNetProfit: 862.28, parentNetProfitYoY: 15.38,
-        netCashOperate: 920.0,
-        salesServices: 1850.0,
-        operatingCashToProfitRatio: 1.07,
-        salesCashToRevenueRatio: 1.06,
-        expenseRatio: 12.5,
-        saleExpenseRatio: 3.2,
-        manageExpenseRatio: 6.8,
-      },
-    };
   },
 
   render(data) {

@@ -5,12 +5,15 @@ set -euo pipefail
 GATEWAY_PORT=${GATEWAY_PORT:-8777}
 WEB_PORT=${WEB_PORT:-8778}
 
-# 项目路径
-GATEWAY_DIR="${HOME}/Projects/llm-gateway-sdk"
-RESEARCH_DIR="${HOME}/Projects/company_research"
+# 从脚本所在目录推导项目路径
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# LLM Gateway 目录（假设与当前项目同级）
+GATEWAY_DIR="$(cd "${PROJECT_ROOT}/../llm-gateway-sdk" && pwd)"
 
 # 日志路径
-LOG_DIR="${RESEARCH_DIR}/logs"
+LOG_DIR="${PROJECT_ROOT}/logs"
 mkdir -p "$LOG_DIR"
 
 GATEWAY_LOG="${LOG_DIR}/gateway.log"
@@ -82,7 +85,7 @@ if is_port_in_use "$WEB_PORT"; then
 else
     echo -e "${BLUE}▶ 启动股票分析 Web UI（端口 ${WEB_PORT}）...${NC}"
 
-    cd "$RESEARCH_DIR"
+    cd "$PROJECT_ROOT"
     export PORT="$WEB_PORT"
     export LLM_GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}/v1"
     nohup npx tsx src/web/server.ts > "$WEB_LOG" 2>&1 &
