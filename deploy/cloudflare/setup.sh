@@ -51,7 +51,7 @@ fi
 # 3. 创建命名隧道
 echo ""
 echo -e "${BLUE}▶ 创建命名隧道...${NC}"
-TUNNEL_NAME="stock-api"
+TUNNEL_NAME="fin-api"
 if cloudflared tunnel list 2>/dev/null | grep -q "${TUNNEL_NAME}"; then
     echo -e "${GREEN}  ✓ 隧道 '${TUNNEL_NAME}' 已存在${NC}"
     TUNNEL_ID=$(cloudflared tunnel list | grep "${TUNNEL_NAME}" | awk '{print $1}')
@@ -110,7 +110,7 @@ echo ""
 echo -e "${BLUE}是否创建 systemd 服务实现开机自启？ (y/n)${NC}"
 read -r answer
 if [[ "$answer" =~ ^[Yy]$ ]]; then
-    sudo tee /etc/systemd/system/cloudflared-stock-api.service > /dev/null <<EOF
+    sudo tee /etc/systemd/system/cloudflared-fin-api.service > /dev/null <<EOF
 [Unit]
 Description=Cloudflare Tunnel for Stock Research API
 After=network.target
@@ -126,7 +126,7 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
-    echo -e "${GREEN}  ✓ systemd 服务已创建: cloudflared-stock-api.service${NC}"
-    echo -e "${GREEN}  启动: sudo systemctl start cloudflared-stock-api${NC}"
-    echo -e "${GREEN}  自启: sudo systemctl enable cloudflared-stock-api${NC}"
+    echo -e "${GREEN}  ✓ systemd 服务已创建: cloudflared-fin-api.service${NC}"
+    echo -e "${GREEN}  启动: sudo systemctl start cloudflared-fin-api${NC}"
+    echo -e "${GREEN}  自启: sudo systemctl enable cloudflared-fin-api${NC}"
 fi

@@ -51,7 +51,7 @@ cloudflared --version
 cloudflared tunnel login
 
 # 创建命名隧道
-cloudflared tunnel create stock-api
+cloudflared tunnel create fin-api
 
 # 查看隧道 ID
 cloudflared tunnel list
@@ -75,16 +75,16 @@ ingress:
 
 ```bash
 # 前台运行（调试）
-cloudflared tunnel run stock-api
+cloudflared tunnel run fin-api
 
 # 后台运行
-nohup cloudflared tunnel run stock-api > /tmp/cloudflared.log 2>&1 &
+nohup cloudflared tunnel run fin-api > /tmp/cloudflared.log 2>&1 &
 ```
 
 启动后终端会输出公网 URL：
 ```
 Your quick Tunnel has been created! Visit it at:
-https://stock-api-xxxxxxxx.trycloudflare.com
+https://fin-api-xxxxxxxx.trycloudflare.com
 ```
 
 ### 5. 部署 Pages
@@ -106,7 +106,7 @@ wrangler pages publish . --project-name=stock-research
 在 Pages URL 后附加 Tunnel 地址作为 hash 参数：
 
 ```
-https://stock-research-xxx.pages.dev/#api=https://stock-api-xxx.trycloudflare.com
+https://stock-research-xxx.pages.dev/#api=https://fin-api-xxx.trycloudflare.com
 ```
 
 ---
@@ -114,7 +114,7 @@ https://stock-research-xxx.pages.dev/#api=https://stock-api-xxx.trycloudflare.co
 ## 持久化运行（systemd）
 
 ```bash
-sudo tee /etc/systemd/system/cloudflared-stock-api.service <<'EOF'
+sudo tee /etc/systemd/system/cloudflared-fin-api.service <<'EOF'
 [Unit]
 Description=Cloudflare Tunnel for Stock Research API
 After=network.target
@@ -122,7 +122,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/cloudflared tunnel run stock-api
+ExecStart=/usr/local/bin/cloudflared tunnel run fin-api
 Restart=on-failure
 RestartSec=5s
 
@@ -131,8 +131,8 @@ WantedBy=multi-user.target
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable cloudflared-stock-api
-sudo systemctl start cloudflared-stock-api
+sudo systemctl enable cloudflared-fin-api
+sudo systemctl start cloudflared-fin-api
 ```
 
 ---
