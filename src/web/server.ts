@@ -9,6 +9,15 @@ import {
   saveHTMLReport,
 } from "../report.js";
 import { checkGatewayHealth } from "../ai/gateway.js";
+import {
+  fetchStockData,
+  fetchFinancialRiskMetrics,
+} from "../data/eastmoney.js";
+import {
+  fetchHistoricalValuation,
+  fetchFinancialData,
+  fetchPeerComparison,
+} from "../data/akshare.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
@@ -128,6 +137,115 @@ function handleAnalyze(req: IncomingMessage, res: ServerResponse): void {
     });
 }
 
+// JSON endpoint: /api/stock-data?stock=CODE
+// 为 stock_research_tool.html 提供聚合原始数据
+async function handleStockData(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
+  const url = new URL(req.url!, `http://localhost`);
+  const stockCode = url.searchParams.get("stock");
+
+  if (!stockCode) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: "Missing stock parameter" }));
+    return;
+  }
+
+  try {
+    const [{ realtime, kline }, historicalPE, financials, peerComparison, financialRisk] =
+      await Promise.all([
+        fetchStockData(stockCode),
+        fetchHistoricalValuation(stockCode),
+        fetchFinancialData(stockCode),
+        fetchPeerComparison(stockCode),
+        fetchFinancialRiskMetrics(stockCode).catch(() => null),
+      ]);
+
+    const data = {
+      code: realtime.code,
+      name: realtime.name,
+      realtime: {
+        code: realtime.code,
+        name: realtime.name,
+        price: realtime.price,
+        open: realtime.open,
+        high: realtime.high,
+        low: realtime.low,
+        pe: realtime.pe,
+        pb: realtime.pb,
+        marketCap: realtime.marketCap,
+      },
+      kline: kline.map((d) => ({
+        date: d.date,
+        open: d.open,
+        close: d.close,
+        high: d.high,
+        low: d.low,
+        volume: d.volume,
+      })),
+      historicalPE: historicalPE.map((p) => ({
+        date: p.date,
+        close: p.close,
+        peTtm: p.peTtm,
+        pb: p.pb,
+      })),
+      financials: financials.map((f) => ({
+        year: f.year,
+        revenue: f.revenue,
+        revenueGrowth: f.revenueGrowth,
+        netProfit: f.netProfit,
+        profitGrowth: f.profitGrowth,
+        roe: f.roe,
+        grossMargin: f.grossMargin,
+      })),
+      peerComparison: peerComparison
+        ? {
+            industry: peerComparison.industry,
+            peers: peerComparison.peers.map((p) => ({
+              code: p.code,
+              name: p.name,
+              pe: p.pe,
+              pb: p.pb,
+              roe: p.roe,
+              marketCap: p.marketCap,
+            })),
+          }
+        : null,
+      financialRisk: financialRisk
+        ? {
+            reportName: financialRisk.reportName,
+            accountsReceivable: financialRisk.accountsReceivable,
+            accountsReceivableYoY: financialRisk.accountsReceivableYoY,
+            inventory: financialRisk.inventory,
+            inventoryYoY: financialRisk.inventoryYoY,
+            monetaryFunds: financialRisk.monetaryFunds,
+            debtAssetRatio: financialRisk.debtAssetRatio,
+            totalRevenue: financialRisk.totalRevenue,
+            totalRevenueYoY: financialRisk.totalRevenueYoY,
+            parentNetProfit: financialRisk.parentNetProfit,
+            parentNetProfitYoY: financialRisk.parentNetProfitYoY,
+            netCashOperate: financialRisk.netCashOperate,
+            salesServices: financialRisk.salesServices,
+            operatingCashToProfitRatio: financialRisk.operatingCashToProfitRatio,
+            salesCashToRevenueRatio: financialRisk.salesCashToRevenueRatio,
+            expenseRatio: financialRisk.expenseRatio,
+            saleExpenseRatio: financialRisk.saleExpenseRatio,
+            manageExpenseRatio: financialRisk.manageExpenseRatio,
+          }
+        : null,
+    };
+
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(data));
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[/api/stock-data] 错误: ${errMsg}`);
+    res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: errMsg }));
+  }
+}
+
 async function runAnalysis(
   stockCode: string,
   sendEvent: (type: string, data: unknown) => boolean
@@ -180,6 +298,8 @@ const server = createServer((req, res) => {
     serveIndex(res);
   } else if (url.pathname === "/api/analyze") {
     handleAnalyze(req, res);
+  } else if (url.pathname === "/api/stock-data") {
+    handleStockData(req, res);
   } else if (url.pathname.startsWith("/reports/")) {
     const filename = decodeURIComponent(basename(url.pathname));
     const filepath = join(process.cwd(), "reports", filename);

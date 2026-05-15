@@ -1,3 +1,4 @@
+<!-- From: /root/.openclaw/workspace/projects/company-research/AGENTS.md -->
 # AGENTS.md
 
 本文件面向 AI 编程助手。如果你正在阅读此文件，说明你对本项目一无所知——以下内容将帮助你快速理解项目结构、技术栈和开发规范。

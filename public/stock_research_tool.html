@@ -594,11 +594,18 @@ applyTheme();
 
 // ==================== 配置 ====================
 const CONFIG = {
-  // API Base URL - 部署时替换为 Tunnel 公网地址
-  // 本地测试时可改为 http://localhost:3000
-  apiBase: window.location.hostname === 'localhost'
-    ? 'http://localhost:3000'
-    : 'https://api.yourdomain.com',
+  // API Base URL 读取优先级：
+  // 1. URL hash 参数 api=xxx（如 #api=https://xxx.trycloudflare.com）
+  // 2. 全局变量 window.API_BASE
+  // 3. localhost 默认 http://localhost:3000
+  // 4. 同域名相对路径（适用于 Pages + Tunnel 同域场景）
+  get apiBase() {
+    const hashMatch = location.hash.match(/api=([^&]+)/);
+    if (hashMatch) return decodeURIComponent(hashMatch[1]);
+    if (window.API_BASE) return window.API_BASE;
+    if (location.hostname === 'localhost') return 'http://localhost:3000';
+    return ''; // 空字符串表示使用同域名相对路径
+  },
 };
 
 // ==================== 工具函数 ====================
@@ -1303,9 +1310,18 @@ const app = {
     errorMsg.classList.remove('active');
 
     try {
-      const res = await fetch(`${CONFIG.apiBase}/api/analyze/${input}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const apiBase = CONFIG.apiBase;
+      let data;
+
+      if (apiBase) {
+        // 真实 API 模式（通过 Cloudflare Tunnel 访问本地服务）
+        const res = await fetch(`${apiBase}/api/stock-data?stock=${encodeURIComponent(input)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        data = await res.json();
+      } else {
+        // 本地开发模式：无配置时使用模拟数据
+        data = await this.fetchMockData(input);
+      }
 
       this.render(data);
       results.classList.add('active');
